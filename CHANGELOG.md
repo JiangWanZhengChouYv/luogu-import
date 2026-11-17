@@ -1,5 +1,54 @@
 # Changelog
 
+## 1.1.2 — 2026-11-17
+
+### 分发安全修复（重点）
+
+本版针对「装到别人的 OJ 上会不会破坏原有站点」做了三处收紧。
+
+#### 1. 顶部导航「评测记录」默认不再隐藏
+
+1.1.0 / 1.1.1 会覆盖 `templates/partials/nav.html` 并无条件隐藏「评测记录」导航项 ——
+那是开发者的个人偏好，不该出现在分发给别人的插件里。
+
+现在默认渲染结果与上游 `ui-default` **逐字一致**，只有把系统设置
+`luogu-import.hideRecordNav` 设为 `true` 才会隐藏。
+
+#### 2. 批量删题接口不再误伤本站题目
+
+`POST /manage/luogu/cleanup` 原来按**题号形态**（`looksLikeLuoguPid`）判断要删谁，
+而 Hydro 自带的演示题 `P1000` 形状恰好符合，实测会被列入删除清单。
+
+现在改为只处理 `luogu.problems` 里**登记过**的题（即插件真的导入过的），
+并新增两道确认：必须显式传 `keep`，默认 `dryRun: true`，真删还要 `confirm: "DELETE"`。
+
+#### 3. 导航项插入位置不再依赖 `record_main` 存在
+
+`injectUI('Nav', ..., { before: 'record_main' })` 在目标不存在时会退化成追加到末尾。
+现在按 `record_main → ranking → discussion_main → homepage` 依次找一个存在的锚点。
+
+### 兼容性验证
+
+在独立实例上实测 **Hydro 5.0.7 + `@hydrooj/ui-default` 4.58.5**：
+
+| 项 | 结果 |
+| --- | --- |
+| 插件加载 | `apply plugin ... scope luogu-import`，无报错 |
+| 顶部导航 | 7 项原样 + 「第三方账号」插在「评测记录」前，「评测记录」保留 |
+| `/manage/luogu` / `config` / `tags` / `jobs` | 200 |
+| 导入 P1001 | 成功，docId=2，题面 zh/en |
+| 题目页 | 200，6 处「提交到 Luogu」、4 处 scratchpad 注入 |
+| `/luogu/account` / `/luogu/submit/P1001` | 200 |
+| 删题 dryRun | 只列插件导入的 P1001，**不含** Hydro 自带 P1000 |
+| 模板一致性 | `nav.html` 与 `problem_sidebar_normal.html` 在 4.58.5 / 4.59.1 之间完全相同 |
+
+### 已知问题
+
+`hydrooj cli script luoguImport ...` 在 5.0.7 与 5.1.0 上都不可用：
+Hydro 的 CLI 在 addon 的 `apply()` 完成之前就去查 `global.Hydro.script`，
+所以插件注册的脚本一定查不到（实测 registry 里随后才会出现 `luoguImport`）。
+插件因此有两处 CLI 入口失效，请改用后台页面或 HTTP 接口；本版已在 README 标注。
+
 ## 1.1.1 — 2026-11-17
 
 ### 修复：在线编程「评测记录」面板点开后一直空表

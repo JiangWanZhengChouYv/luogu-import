@@ -1,3 +1,7 @@
+{# 覆盖 ui-default 的 nav.html。默认渲染结果与上游逐字一致，
+   唯一改动：支持通过系统设置 luogu-import.hideRecordNav 关闭「评测记录」导航项，
+   默认 false —— 分发用插件不擅自改变别人站点的导航结构。 #}
+{% set _hide_record_nav = (ctx.setting.get('luogu-import.hideRecordNav') or false) %}
 {%- macro nav_item(item) -%}
 <li class="nav__list-item">
   <a href="{{ url(item.name, item.args, query=item.args.query(handler) if typeof(item.args.query) == 'function' else item.args.query or {}) }}" class="nav__item{% if page_name.startsWith(item.args.prefix) %} nav--active{% endif %}">
@@ -13,11 +17,9 @@
         <a href="/"><img class="nav__logo" src="{{ ctx.setting.get('ui-default.nav_logo_dark') }}"></a>
       </li>
       {%- for item in overrideNav|default(ui.getNodes('Nav')) -%}
-        {# 洛谷插件：隐藏顶部「评测记录」导航项（用户要求），其余照常渲染 #}
-        {% if item.name != 'record_main' and item.name != 'record' and item.checker(handler) %}
+        {%- if item.checker(handler) and not (_hide_record_nav and (item.name == 'record_main' or item.name == 'record')) %}
         {{ nav_item(item) }}
-        {% endif %}
-      {%- endfor -%}
+      {% endif %}{%- endfor -%}
     </ol>
     <ol class="nav__list nav__list--secondary clearfix">
     {% if not handler.user.hasPriv(PRIV.PRIV_USER_PROFILE) %}

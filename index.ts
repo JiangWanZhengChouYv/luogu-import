@@ -11,7 +11,7 @@ import {
 } from './src/importer';
 import {
     formatRecord, getSourcePid, initSourceMarkers, isLuoguProblem, LANG_MAP,
-    looksLikeLuoguPid, markLuoguProblem, resolveLang,
+    listMarkedPids, looksLikeLuoguPid, markLuoguProblem, resolveLang,
 } from './src/submit';
 import {
     clearCredentials, getPublicConfig, initConfig, loadCredentials, saveCredentials,
@@ -507,20 +507,53 @@ class LuoguRecordHandler extends Handler {
     }
 }
 
-/** 批量删题：只保留指定 pid，其余全删（仅管理员，运维用） */
+/**
+ * 批量删题：只保留指定 pid，删掉其余**本插件导入的**洛谷题（仅管理员，运维用）。
+ *
+ * 分发安全约束（很重要）：这个接口会调 ProblemModel.del，一旦条件写错就会
+ * 删掉别人站点自己出的题。因此：
+ *  1. 只处理 luogu.problems 里登记过的题目（即本插件真的导入过的），本站原有题一律不动；
+ *  2. 必须显式传 keep（不再默认 'P1001'），且必须传 confirm:"DELETE"；
+ *  3. 默认 dryRun=true，只返回将要删除的清单，确认后才真删。
+ */
 class LuoguProblemCleanupHandler extends Handler {
     async prepare() {
         this.checkPriv(PRIV.PRIV_EDIT_SYSTEM);
     }
 
     async post() {
-        const domainId = String(this.request.body?.domainId || 'system');
-        const keep = new Set(
-            String(this.request.body?.keep || 'P1001').split(/[\s,，]+/).filter(Boolean),
-        );
+        const body = this.request.body || {};
+        const domainId = String(body.domainId || 'system');
+        const dryRun = body.dryRun !== false;           // 默认演练，必须显式 false 才真删
+        const keepRaw = String(body.keep || '').trim();
+        if (!keepRaw) throw new ValidationError('必须显式传 keep（要保留的题号清单）');
+        if (!dryRun && String(body.confirm || '') !== 'DELETE') {
+            throw new ValidationError('真删需要 confirm:"DELETE"；建议先 dryRun 查看清单');
+        }
+        const keep = new Set(keepRaw.split(/[\s,，]+/).filter(Boolean));
         const all = await ProblemModel.getMulti(domainId)
             .project({ docId: 1, pid: 1 }).toArray();
-        const toDelete = all.filter((p: any) => !keep.has(String(p.pid)));
+        // 只删「本插件导入过」的题：以 luogu.problems 的登记为准。
+        // 不能用 looksLikeLuoguPid —— Hydro 自带演示题 P1000 形状也像洛谷题号，
+        // 只看形状会把它一起删掉（实测过）。
+        const marked = await listMarkedPids(domainId);
+        const candidates = all.filter((p: any) => {
+            const pid = String(p.pid);
+            if (keep.has(pid)) return false;
+            return marked.has(pid);
+        });
+        if (dryRun) {
+            this.response.body = {
+                dryRun: true,
+                total: all.length,
+                willDelete: candidates.length,
+                sample: candidates.slice(0, 30).map((p: any) => p.pid),
+                keep: [...keep],
+                hint: '确认无误后带 confirm:"DELETE" 与 dryRun:false 再调一次',
+            };
+            return;
+        }
+        const toDelete = candidates;
         const deleted: string[] = [];
         const failed: string[] = [];
         for (const p of toDelete) {
@@ -729,8 +762,12 @@ export async function apply(ctx: Context) {
     ctx.Route('luogu_account', '/luogu/account', LuoguAccountPageHandler, PRIV.PRIV_USER_PROFILE);
     ctx.Route('luogu_account_save', '/luogu/account/save', LuoguAccountHandler, PRIV.PRIV_USER_PROFILE);
     ctx.Route('luogu_account_profile', '/luogu/account/profile', LuoguAccountProfileHandler, PRIV.PRIV_USER_PROFILE);
-    // 与首页 / 题库 / 训练 / 比赛同级，插在「记录」之前
-    ctx.injectUI('Nav', 'luogu_account', { prefix: 'luogu', before: 'record_main' }, PRIV.PRIV_USER_PROFILE);
+    // 与首页 / 题库 / 训练 / 比赛同级，插在「记录」之前。
+    // before 只按名字查找，目标不存在时 Hydro 会退化成「追加到末尾」，不会报错；
+    // 但对方若隐藏了 record_main（或版本差异导致名字不同），这里就换一个常见锚点。
+    const navAnchor = ['record_main', 'ranking', 'discussion_main', 'homepage']
+        .find((n) => (global as any).Hydro?.ui?.getNodes?.('Nav')?.some((i: any) => i.name === n)) || 'homepage';
+    ctx.injectUI('Nav', 'luogu_account', { prefix: 'luogu', before: navAnchor }, PRIV.PRIV_USER_PROFILE);
 
     // 题目详情页：handler/create 阶段路由参数尚未解析，从 URL 里取 pid 做同步判定；
     // 标记集合（luogu.problems）由提交接口的 isLuoguProblem() 负责，二者结合。

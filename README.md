@@ -62,6 +62,33 @@ HydroOJ 的洛谷插件：**拉题 → 多语言题面 → 本地样例评测 �
 
 > 插件会覆盖 `templates/partials/{nav,problem_sidebar_normal}.html`。升级 `@hydrooj/ui-default` 后需要同步比对这两个文件，否则可能丢原生菜单项。
 
+### 对已有站点的影响
+
+本插件按「不改变别人站点行为」设计，默认只**新增**入口，不改动原有内容：
+
+| 项 | 默认 | 说明 |
+| --- | --- | --- |
+| 顶部导航「评测记录」 | **保留** | 只有把系统设置 `luogu-import.hideRecordNav` 设为 `true` 才会隐藏 |
+| 题目侧栏 | 仅追加「提交到 Luogu」 | 只对洛谷题显示，本站原创题不受影响 |
+| 在线编程工具栏 | 仅追加「提交到 Luogu」 | 不改原生递交行为 |
+| 系统设置 / 站点名 / 公告 | **不写** | 插件不修改这些 |
+| 已有题目 | **不动** | 导入时同名题默认跳过，需显式 `overwrite` 才覆盖 |
+
+已知兼容性：在 Hydro **5.0.7 / 5.1.0**（`@hydrooj/ui-default` 4.58.x / 4.59.x）上验证。
+两个版本里 `problem_sidebar_normal.html` 与 `nav.html` 的内容完全一致，因此覆盖不会错位。
+更低版本未测试；若模板结构差异较大，删除 `templates/partials/{nav,problem_sidebar_normal}.html`
+即可让插件只保留后端功能（拉题 / 提交接口仍可用，但题目页不会有侧栏按钮）。
+
+### 批量删题接口的保护
+
+`POST /manage/luogu/cleanup` 会调用 `ProblemModel.del`，为防止误删：
+
+- 必须显式传 `keep`（不再默认 `P1001`）
+- 默认 `dryRun: true`，只返回将要删除的清单
+- 真删需要同时传 `dryRun: false` 与 `confirm: "DELETE"`
+- **只处理 `luogu.problems` 里登记过的题**（即本插件真的导入过的），本站原有题目不会被删
+  - 早期版本按题号形态判断，会把 Hydro 自带的演示题 `P1000` 也算进去，已修正
+
 ## 配置
 
 ### 拉题账号（管理员，全站共享）
@@ -94,13 +121,18 @@ HydroOJ 的洛谷插件：**拉题 → 多语言题面 → 本地样例评测 �
 
 全量任务可暂停 / 继续 / 取消，backend 重启后自动从断点续跑。
 
-### CLI
+### CLI（当前不可用，用后台页面代替）
 
 ```bash
+# 期望的用法（Hydro 5.0.7 / 5.1.0 上会报 "Script luoguImport not found."）
 hydrooj cli script luoguImport '{"pids":["P1001"]}'
-hydrooj cli script luoguImport '{"range":"P1000-P1005"}'
-hydrooj cli script luoguImport '{"list":{"type":"P","difficulty":[1],"tag":[1],"pages":1}}'
 ```
+
+**为什么不能用**：Hydro 的 CLI 在 addon 的 `apply()` 执行完成之前就去查
+`global.Hydro.script`，所以插件注册的脚本必然查不到（实测：报错之后
+`Registry` 里才出现 `luoguImport`）。这是上游加载时序问题，不是插件配置错误。
+
+请改用**控制面板 → 洛谷题目导入**（`/manage/luogu`），功能完全一致且能看实时进度。
 
 ### 提交
 

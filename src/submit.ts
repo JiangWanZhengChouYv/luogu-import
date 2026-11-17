@@ -121,6 +121,23 @@ export async function getSourcePid(domainId: string, hydroPid: string): Promise<
     return hydroPid;
 }
 
+/**
+ * 批量取出「本插件确实导入过」的 pid 集合。
+ * 删题等破坏性操作必须用它，不能用 looksLikeLuoguPid —
+ * Hydro 自带的演示题 P1000 形状也是洛谷题号，只看形状会误删本站原有题目。
+ */
+export async function listMarkedPids(domainId: string): Promise<Set<string>> {
+    const out = new Set<string>();
+    if (!markerColl) return out;
+    try {
+        const docs = await markerColl.find({ domainId }).project({ hydroPid: 1 }).toArray();
+        for (const d of docs) if (d?.hydroPid) out.add(String(d.hydroPid));
+    } catch (e) {
+        logger.warn('listMarkedPids failed: %s', (e as Error).message);
+    }
+    return out;
+}
+
 export async function isLuoguProblem(domainId: string, pid: string): Promise<boolean> {
     if (markerColl) {
         const doc = await markerColl.findOne({ _id: markerKey(domainId, pid) }).catch(() => null);
