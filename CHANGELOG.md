@@ -1,34 +1,35 @@
 # Changelog
 
-## 1.0.0 — 2026-11-16
+## 1.1.1 — 2026-11-17
 
-首个可分发的完整版本。
+### 修复：在线编程「评测记录」面板点开后一直空表
 
-### 新增
+`@hydrooj/ui-default@4.59.1` 的 bug，本插件做了兼容处理。
 
-- 洛谷登录态：`_uid` + `__client_id`，AES-256-GCM 加密存 Mongo（`luogu.config`），密钥 `data/backend/luogu.key`；接口 / 日志只暴露长度。
-- 全量拉题：按来源 `P/B/CF/SP/AT/UVA` 逐页遍历，Mongo 持久化任务、断点续跑、暂停 / 继续 / 取消、规模与磁盘估算、空号 HEAD 探测补漏。
-- 多语言题面：`data.translations` → Hydro `problem.statement`（`zh.md` / `en.md` …），支持 `?lang=` 切换。
-- 远端提交：`/luogu/submit/:pid` 页面 + 在线编程工具栏按钮；CSRF、验证码（JPEG，跟随 302）重提；洛谷评测记录轮询。
-- 提交即本地评测：同一份代码同时产生洛谷行与 `LOCAL` 行，结果进原生评测记录表格。
-- 反算测试点：AC 代码入库为标程，按题面数据范围生成极限规模测试点；方格题 `n²` 填满；10 组 profile；成功 ≥6 组即写入；失败自动清理残缺 `.in`。
-- 用户独立提交账号（`luogu.accounts`），与全站拉题账号隔离。
-- 管理接口：`/manage/luogu/{config,test-login,estimate,jobs,job-action,status,import,oracle/:pid}`。
+复现：进入在线编程时「评测记录」是收起的（`localStorage['scratchpad/records'] === 'false'`），
+之后再点开 → 面板正常展开、按钮正常高亮，但表格永远是空的，**且浏览器不发任何请求**。
 
-### 修复
+上游根因：
 
-- 反算生成器 `SEED` 被提前替换为空串，导致 10 组输入全是 `1`。
-- 全 0 终止行（如 `0 0 0`）被随机化，输入不符合题面格式。
-- 覆盖导入残留旧测试点（空洞 `.out`），本地评测直接判错。
-- 反算规模升档曾超过题面上界（P1003 升到 40000），现以解析出的 `n` 上界为硬上限。
-- 结构不可放大的题（A+B）不再触发无意义的升档重跑。
-- judge 会话失效（`PostFile Fail 403`）导致 generate 记录 System Error，重启 judge 恢复。
+- 初始 `records.visible` 只在挂载时读一次 `localStorage`
+- 数据也只在 `componentDidMount` 里 `recordsVisible && loadSubmissions()` 拉一次
+- 而 toggle 的 reducer 只翻转 `visible` 并写回 `localStorage`，**从不重新拉取**
 
-### 验证
+所以 `visible` 从 `false` → `true` 时没有任何请求。
 
-- 冒烟：登录、管理页、tags / config / test-login / estimate / jobs / status / oracle、提交页、校验路径、账号页、在线编程注入、导航、评测机 Online。
-- 真实登录：`MarkZhang0520`（uid 2270787）校验通过。
-- 反算：P1003（n≤1e4，10 组 ×195KB）、P1004（N≤9，10 组 ×81 格 + `0 0 0`）、P1001（不可放大，不升档）。
+本插件的处理：面板展开且 tbody 持续约 1.5 秒为空时，自己取一次
+`UiContext.getSubmissionsUrl` 并按原生行结构补渲染。
+
+- 延迟 1.5 秒是必需的：挂载时面板本来就展开的情况，原生会在几百毫秒内自己填好，
+  抢在前面补会插出**重复行**
+- 补之前与插入前都会检查 `tbody.children.length`，原生已填则不动手
+- 原生 `<td>` 用的是 `memory`（KB）/ `time`（ms），不是 `memoryKb` / `timeMs`
+
+上游若日后修掉此 bug，本补丁会因「已有行」判断而自动失效，不会重复渲染。
+
+### 说明
+
+「自测」面板空白属预期行为，不是 bug：它不预填样例，需要自己粘贴数据后按 F9。
 
 ## 1.1.0 — 2026-11-17
 
@@ -69,3 +70,33 @@ dataset.py               → 构造候选排序训练集
 train2.py                → 训练，输出 top-1
 export.py                → 导出 range-weights.json
 ```
+
+## 1.0.0 — 2026-11-16
+
+首个可分发的完整版本。
+
+### 新增
+
+- 洛谷登录态：`_uid` + `__client_id`，AES-256-GCM 加密存 Mongo（`luogu.config`），密钥 `data/backend/luogu.key`；接口 / 日志只暴露长度。
+- 全量拉题：按来源 `P/B/CF/SP/AT/UVA` 逐页遍历，Mongo 持久化任务、断点续跑、暂停 / 继续 / 取消、规模与磁盘估算、空号 HEAD 探测补漏。
+- 多语言题面：`data.translations` → Hydro `problem.statement`（`zh.md` / `en.md` …），支持 `?lang=` 切换。
+- 远端提交：`/luogu/submit/:pid` 页面 + 在线编程工具栏按钮；CSRF、验证码（JPEG，跟随 302）重提；洛谷评测记录轮询。
+- 提交即本地评测：同一份代码同时产生洛谷行与 `LOCAL` 行，结果进原生评测记录表格。
+- 反算测试点：AC 代码入库为标程，按题面数据范围生成极限规模测试点；方格题 `n²` 填满；10 组 profile；成功 ≥6 组即写入；失败自动清理残缺 `.in`。
+- 用户独立提交账号（`luogu.accounts`），与全站拉题账号隔离。
+- 管理接口：`/manage/luogu/{config,test-login,estimate,jobs,job-action,status,import,oracle/:pid}`。
+
+### 修复
+
+- 反算生成器 `SEED` 被提前替换为空串，导致 10 组输入全是 `1`。
+- 全 0 终止行（如 `0 0 0`）被随机化，输入不符合题面格式。
+- 覆盖导入残留旧测试点（空洞 `.out`），本地评测直接判错。
+- 反算规模升档曾超过题面上界（P1003 升到 40000），现以解析出的 `n` 上界为硬上限。
+- 结构不可放大的题（A+B）不再触发无意义的升档重跑。
+- judge 会话失效（`PostFile Fail 403`）导致 generate 记录 System Error，重启 judge 恢复。
+
+### 验证
+
+- 冒烟：登录、管理页、tags / config / test-login / estimate / jobs / status / oracle、提交页、校验路径、账号页、在线编程注入、导航、评测机 Online。
+- 真实登录：`MarkZhang0520`（uid 2270787）校验通过。
+- 反算：P1003（n≤1e4，10 组 ×195KB）、P1004（N≤9，10 组 ×81 格 + `0 0 0`）、P1001（不可放大，不升档）。
