@@ -1,5 +1,7 @@
 # luogu-import v1.1.0
 
+仓库：https://github.com/JiangWanZhengChouYv/luogu-import
+
 HydroOJ 的洛谷插件：**拉题 → 多语言题面 → 本地样例评测 → 提交到洛谷 → 用 AC 代码反算极限测试点**。
 
 - 适配：HydroOJ **5.x**（`@hydrooj/register` + Node 22）
