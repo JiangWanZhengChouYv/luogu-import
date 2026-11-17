@@ -1,0 +1,10 @@
+{
+  "name": "luogu-import",
+  "version": "1.1.0",
+  "description": "Import Luogu problems (login, full crawl, multi-language), submit to Luogu, regenerate test data with a zh/en range-recognition model",
+  "main": "./index.ts",
+  "license": "MIT",
+  "hydro": {
+    "addon": true
+  }
+}

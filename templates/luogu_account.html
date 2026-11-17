@@ -1,0 +1,174 @@
+{% extends "layout/basic.html" %}
+{% block content %}
+<div class="row">
+  <div class="medium-9 columns">
+    <div class="section">
+      <div class="section__header">
+        <h1 class="section__title">第三方账号</h1>
+        <div class="section__tools"><span class="tool-button">{{ hydroUser }}</span></div>
+      </div>
+      <div class="section__body typo">
+        <p>这里绑定的是<strong>你自己的洛谷提交账号</strong>，用于「提交到 Luogu」和在线编程模式里的洛谷提交。
+          拉取题目的账号由管理员在后台单独配置，与这里完全隔离；你的绑定、清除、校验都不会影响拉题账号。</p>
+        {% if sharedAvailable and not account.configured %}
+        <blockquote class="warn">你还没有绑定个人提交账号，提交时会临时使用管理员共享账号。绑定后即使用你自己的账号。</blockquote>
+        {% endif %}
+        {% if account.message %}<blockquote class="warn">{{ account.message }}</blockquote>{% endif %}
+
+        <h3>账号信息</h3>
+        <div id="lg-account-card">
+          <p class="supplementary" id="lg-account-empty">正在读取已绑定的洛谷账号…</p>
+          <div id="lg-account-profile" style="display:none">
+            <img id="lg-avatar" alt="洛谷头像" style="width:64px;height:64px;border-radius:50%;vertical-align:middle;margin-right:14px">
+            <span style="vertical-align:middle">
+              <strong id="lg-uname"></strong>
+              <a id="lg-home" href="https://www.luogu.com.cn/" target="_blank" rel="noopener">洛谷主页</a>
+              <span id="lg-slogan" class="supplementary"></span>
+            </span>
+            <p id="lg-stats" class="supplementary" style="margin-top:10px"></p>
+          </div>
+          <p id="lg-account-meta" class="supplementary"></p>
+        </div>
+
+        <hr>
+        <h3>绑定 / 更新提交账号</h3>
+        <p class="supplementary">从浏览器 Cookie 复制 <code>_uid</code>（数字）与 <code>__client_id</code>（客户端 ID）。保存后加密存库，按当前 Hydro 账号独立保存；页面与日志都不回显原值。</p>
+        <div class="row">
+          <div class="medium-4 columns">
+            <label class="material textbox">_uid
+              <input id="lg-uid" type="text" class="textbox" autocomplete="off" placeholder="数字 uid" value="{{ account.luoguUid or '' }}">
+            </label>
+          </div>
+          <div class="medium-5 columns">
+            <label class="material textbox">__client_id
+              <input id="lg-client-id" type="password" class="textbox" autocomplete="off" placeholder="客户端 ID（从 Cookie 复制）">
+            </label>
+          </div>
+          <div class="medium-3 columns">
+            <button id="lg-save" class="rounded primary button">保存并校验</button>
+            <button id="lg-verify" class="rounded button">测试登录</button>
+            <button id="lg-clear" class="rounded button">清除</button>
+          </div>
+        </div>
+        <p id="lg-msg" class="supplementary"></p>
+      </div>
+    </div>
+  </div>
+  <div class="medium-3 columns">
+    <div class="section side">
+      <div class="section__header"><h1 class="section__title">说明</h1></div>
+      <div class="section__body typo supplementary">
+        <p>提交账号与拉题账号分开保存：拉题账号只有管理员能在「洛谷题目导入」后台维护。</p>
+        <p>再次打开本页会自动用已保存的凭据校验洛谷，并展示用户名、头像与主页。</p>
+        <p>未绑定时按约定可临时回退共享账号；绑定后所有提交、验证码与评测记录查询都使用你自己的账号。</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var initialAccount = {{ accountJSON | safe }};
+  var cached = initialAccount.profile || null;
+
+  function esc(s) {
+    return String(s === undefined || s === null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  function req(url, opts) {
+    opts = opts || {};
+    opts.credentials = 'same-origin';
+    opts.headers = Object.assign({ Accept: 'application/json', 'Content-Type': 'application/json' }, opts.headers || {});
+    return fetch(url, opts).then(function (r) { return r.json(); }).then(function (d) {
+      if (d && d.error) {
+        var e = d.error;
+        throw new Error((e.params && e.params.length) ? e.params.join(' ') : (e.message || '请求失败'));
+      }
+      return d;
+    });
+  }
+
+  function render(profile, meta) {
+    if (profile && profile.uname) {
+      $('lg-account-empty').style.display = 'none';
+      $('lg-account-profile').style.display = '';
+      $('lg-avatar').src = profile.avatar || '';
+      $('lg-avatar').style.display = profile.avatar ? '' : 'none';
+      $('lg-uname').textContent = profile.uname;
+      $('lg-home').href = profile.home || 'https://www.luogu.com.cn/';
+      $('lg-slogan').textContent = profile.slogan ? '「' + profile.slogan + '」' : '';
+      var bits = ['洛谷 uid ' + esc(profile.uid)];
+      if (profile.ranking) bits.push('排名 ' + esc(profile.ranking));
+      if (profile.passed !== undefined) bits.push('通过 ' + esc(profile.passed) + ' 题');
+      if (profile.submitted !== undefined) bits.push('提交 ' + esc(profile.submitted) + ' 次');
+      $('lg-stats').textContent = bits.join(' · ');
+    } else {
+      $('lg-account-empty').style.display = '';
+      $('lg-account-empty').textContent = meta || '尚未绑定个人提交账号';
+      $('lg-account-profile').style.display = 'none';
+    }
+  }
+
+  function metaText(account) {
+    if (!account || !account.configured) return '当前未绑定个人提交账号。';
+    return '已绑定：_uid=' + esc(account.luoguUid) + '，__client_id=已配置(' + esc(account.clientIdLength) + ' 位)';
+  }
+
+  function loadProfile() {
+    req('/luogu/account/profile').then(function (d) {
+      $('lg-account-meta').textContent = metaText(d.account);
+      render(d.profile, d.verified ? '' : (d.message || '登录校验失败，展示的是上次缓存的资料'));
+      if (d.message) $('lg-msg').textContent = d.message;
+    }).catch(function (e) {
+      $('lg-msg').textContent = '读取账号信息失败：' + e.message;
+      render(cached, '');
+    });
+  }
+
+  $('lg-save').addEventListener('click', function () {
+    var uid = $('lg-uid').value.trim(), cid = $('lg-client-id').value.trim();
+    $('lg-msg').textContent = '保存并校验中…';
+    req('/luogu/account/save', { method: 'POST', body: JSON.stringify({ uid: uid, clientId: cid }) })
+      .then(function (d) {
+        $('lg-client-id').value = '';
+        $('lg-msg').textContent = '已加密保存';
+        cached = d.profile || null;
+        $('lg-account-meta').textContent = metaText(d.account);
+        render(cached, '');
+        loadProfile();
+      })
+      .catch(function (e) { $('lg-msg').textContent = '保存失败：' + e.message; });
+  });
+
+  $('lg-verify').addEventListener('click', function () {
+    $('lg-msg').textContent = '校验中…';
+    req('/luogu/account/save', { method: 'POST', body: JSON.stringify({ action: 'verify' }) })
+      .then(function (d) {
+        $('lg-msg').textContent = '已登录：' + d.uname;
+        render(d.profile, '');
+      })
+      .catch(function (e) { $('lg-msg').textContent = '校验失败：' + e.message; });
+  });
+
+  $('lg-clear').addEventListener('click', function () {
+    if (!window.confirm('确定清除你绑定的洛谷提交账号？')) return;
+    req('/luogu/account/save', { method: 'POST', body: JSON.stringify({ action: 'clear' }) })
+      .then(function (d) {
+        $('lg-uid').value = ''; $('lg-client-id').value = '';
+        cached = null;
+        $('lg-msg').textContent = '已清除';
+        $('lg-account-meta').textContent = metaText(d.account);
+        render(null, '当前未绑定个人提交账号');
+      })
+      .catch(function (e) { $('lg-msg').textContent = '清除失败：' + e.message; });
+  });
+
+  $('lg-account-meta').textContent = metaText(initialAccount);
+  render(cached, '');
+  loadProfile();
+})();
+</script>
+{% endblock %}

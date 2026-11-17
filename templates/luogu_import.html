@@ -1,0 +1,465 @@
+{% extends "manage_base.html" %}
+{% block manage_content %}
+<div class="section">
+  <div class="section__header">
+    <h1 class="section__title">洛谷题目导入</h1>
+    <div class="section__tools">
+      <span id="lg-login-state" class="tool-button" title="洛谷登录态">登录态：检查中…</span>
+    </div>
+  </div>
+  <div class="section__body">
+    <p class="typo">支持单题/区间/列表导入，以及按来源逐页遍历的<strong>全量拉取</strong>。题面按 Hydro 官方多语言机制导入（洛谷全部翻译版本写成 <code>problem.statement</code> 的语言条目，题目页可切换语言）。
+      <strong>洛谷官方测试数据不公开</strong>，本地测试点只用题面样例生成，本地判题只能验证样例，<strong>不等价于洛谷 AC</strong>。</p>
+    <p class="typo supplementary">全量任务写进 Mongo，支持暂停 / 继续 / 取消，backend 重启后自动从断点续跑；已存在的题号直接跳过，不重复请求题面。默认限速 1500ms/请求，允许长时间无人值守运行。</p>
+
+    <hr>
+    <h3>洛谷账号（登录态）</h3>
+    <p class="typo supplementary">从浏览器 Cookie 复制 <code>_uid</code>（数字）与 <code>__client_id</code>（客户端 ID，长度以浏览器实际值为准）。保存后加密存库，密钥与密文分离；页面与日志都不回显原值。全量拉取默认要求已配置登录态。</p>
+    <div class="row">
+      <div class="medium-4 columns">
+        <label class="material textbox">_uid
+          <input id="lg-uid" type="text" class="textbox" autocomplete="off" placeholder="数字 uid">
+        </label>
+      </div>
+      <div class="medium-5 columns">
+        <label class="material textbox">__client_id
+          <input id="lg-client-id" type="password" class="textbox" autocomplete="off" placeholder="客户端 ID（从 Cookie 复制）">
+        </label>
+      </div>
+      <div class="medium-3 columns">
+        <button id="lg-save-config" class="rounded primary button">保存配置</button>
+        <button id="lg-test-login" class="rounded button">测试登录</button>
+        <button id="lg-clear-config" class="rounded button">清除</button>
+      </div>
+    </div>
+    <div class="row"><div class="columns">
+      <span id="lg-config-summary" class="supplementary">未配置（匿名抓取公开题）</span>
+      <span id="lg-config-msg" class="supplementary"></span>
+    </div></div>
+
+    <hr>
+    <h3>导入选项（手动与全量共用）</h3>
+    <div class="row">
+      <div class="medium-3 columns">
+        <label class="material textbox">测试点来源
+          <select id="lg-samples" class="select">
+            <option value="first" selected>第一组样例（1 个测试点）</option>
+            <option value="all">全部样例</option>
+            <option value="none">不生成测试点</option>
+          </select>
+        </label>
+      </div>
+      <div class="medium-3 columns">
+        <label class="material textbox">导入到域
+          <input id="lg-domain" type="text" class="textbox" value="{{ domainId }}">
+        </label>
+      </div>
+      <div class="medium-3 columns">
+        <label class="checkbox"><input id="lg-hidden" type="checkbox" class="checkbox"> 导入为隐藏题目</label>
+        <label class="checkbox"><input id="lg-overwrite" type="checkbox" class="checkbox"> 覆盖已存在题目</label>
+      </div>
+      <div class="medium-3 columns">
+        <label class="checkbox"><input id="lg-allow-anon" type="checkbox" class="checkbox"> 允许匿名抓取公开题（跳过登录校验）</label>
+      </div>
+    </div>
+
+    <hr>
+    <h3>手动导入</h3>
+    <div class="row">
+      <div class="medium-6 columns">
+        <label class="material textbox">题号
+          <input id="lg-pids" type="text" class="textbox" placeholder="P1001,P1002 或 P1001 P1002">
+        </label>
+      </div>
+      <div class="medium-6 columns">
+        <label class="material textbox">题号区间
+          <input id="lg-range" type="text" class="textbox" placeholder="P1000-P1010">
+        </label>
+      </div>
+    </div>
+    <div class="row">
+      <div class="medium-3 columns">
+        <label class="material textbox">列表关键词
+          <input id="lg-keyword" type="text" class="textbox" placeholder="可留空">
+        </label>
+      </div>
+      <div class="medium-2 columns">
+        <label class="material textbox">类型
+          <input id="lg-type" type="text" class="textbox" value="P">
+        </label>
+      </div>
+      <div class="medium-2 columns">
+        <label class="material textbox">难度 0-7
+          <input id="lg-difficulty" type="text" class="textbox" placeholder="1,2">
+        </label>
+      </div>
+      <div class="medium-2 columns">
+        <label class="material textbox">抓取页数
+          <input id="lg-pages" type="number" class="textbox" value="1" min="1" max="20">
+        </label>
+      </div>
+      <div class="medium-3 columns">
+        <label class="material textbox">标签
+          <select id="lg-tag" class="select" multiple size="3">
+            <option value="">加载中…</option>
+          </select>
+        </label>
+      </div>
+    </div>
+    <div class="row"><div class="columns">
+      <button id="lg-start-manual" class="rounded primary button">开始手动导入</button>
+      <span id="lg-manual-hint" class="supplementary"></span>
+    </div></div>
+
+    <hr>
+    <h3>全量拉取</h3>
+    <p class="typo supplementary">逐来源遍历 <code>/problem/list?type=T&amp;page=N</code> 直到该来源结束或达到题数上限。进度每处理一题落库；中断、重启、暂停后都能从断点继续。</p>
+    <div class="row"><div class="columns">
+      <strong>来源：</strong>
+      {% for s in sources %}
+      <label class="checkbox" style="display:inline-block; margin-right:16px">
+        <input type="checkbox" class="checkbox lg-source" value="{{ s }}" checked> {{ s }}
+      </label>
+      {% endfor %}
+      <label class="material textbox" style="display:inline-block; width:180px">其他来源（逗号分隔）
+        <input id="lg-extra-sources" type="text" class="textbox" placeholder="可留空">
+      </label>
+    </div></div>
+    <div class="row">
+      <div class="medium-3 columns">
+        <label class="material textbox">题数上限（0 = 不限）
+          <input id="lg-max-problems" type="number" class="textbox" value="0" min="0">
+        </label>
+      </div>
+      <div class="medium-3 columns">
+        <label class="material textbox">限速 ms/请求
+          <input id="lg-delay" type="number" class="textbox" value="{{ delayMs }}" min="300" step="100">
+        </label>
+      </div>
+      <div class="medium-3 columns">
+        <label class="material textbox">小样页数（0 = 全量）
+          <input id="lg-max-pages" type="number" class="textbox" value="0" min="0">
+        </label>
+        <p class="typo supplementary">验收时填 1~2，只拉第一个来源的前几页。</p>
+      </div>
+      <div class="medium-3 columns">
+        <button id="lg-estimate" class="rounded button">估算规模</button>
+        <button id="lg-start-full" class="rounded primary button">启动全量任务</button>
+      </div>
+    </div>
+    <div class="row"><div class="columns">
+      <span id="lg-estimate-text" class="supplementary"></span>
+      <span id="lg-full-hint" class="supplementary"></span>
+    </div></div>
+
+    <div id="lg-progress-wrap" style="display:none">
+      <hr>
+      <h3>任务进度 <span id="lg-job-id" class="supplementary"></span></h3>
+      <div style="background:#e8e8e8;border-radius:4px;height:14px;overflow:hidden">
+        <div id="lg-progress-bar" style="background:#4a90d9;height:14px;width:0%"></div>
+      </div>
+      <p><strong id="lg-progress-text">准备中…</strong></p>
+      <p class="typo supplementary" id="lg-cursor-text"></p>
+      <div>
+        <button id="lg-pause" class="rounded button">暂停</button>
+        <button id="lg-resume" class="rounded button">继续（从断点）</button>
+        <button id="lg-cancel" class="rounded button">取消</button>
+      </div>
+      <pre id="lg-logs" style="max-height:360px;overflow:auto;white-space:pre-wrap;margin-top:12px"></pre>
+    </div>
+
+    <hr>
+    <h3>最近任务</h3>
+    <div id="lg-jobs" class="typo supplementary">加载中…</div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var currentJob = null;
+  var polling = false;
+
+  function req(url, opts) {
+    opts = opts || {};
+    opts.credentials = 'same-origin';
+    opts.headers = Object.assign({
+      Accept: 'application/json',
+      'Content-Type': 'application/json'
+    }, opts.headers || {});
+    return fetch(url, opts).then(function (r) { return r.json(); }).then(function (d) {
+      if (d && d.error) {
+        var e = d.error;
+        // Hydro 的 ValidationError 把具体原因放在 params，外层 message 只是模板
+        throw new Error(typeof e === 'string' ? e
+          : ((e.params && e.params.length) ? e.params.join(' ') : (e.message || '请求失败')));
+      }
+      return d;
+    });
+  }
+
+  function numList(str) {
+    return String(str || '').split(/[\s,，]+/).map(Number).filter(function (n) { return Number.isFinite(n); });
+  }
+
+  function selectedTags() {
+    var sel = $('lg-tag'), out = [];
+    for (var i = 0; i < sel.options.length; i++) {
+      if (sel.options[i].selected && sel.options[i].value) out.push(Number(sel.options[i].value));
+    }
+    return out;
+  }
+
+  function selectedSources() {
+    var out = [], boxes = document.querySelectorAll('.lg-source');
+    for (var i = 0; i < boxes.length; i++) if (boxes[i].checked) out.push(boxes[i].value);
+    String($('lg-extra-sources').value || '').split(/[\s,，]+/).forEach(function (s) {
+      if (s) out.push(s.toUpperCase());
+    });
+    return out;
+  }
+
+  function commonOptions() {
+    return {
+      samples: $('lg-samples').value,
+      hidden: $('lg-hidden').checked,
+      overwrite: $('lg-overwrite').checked,
+      domainId: $('lg-domain').value.trim() || 'system',
+      allowAnonymous: $('lg-allow-anon').checked
+    };
+  }
+
+  /* ---------- 登录态 ---------- */
+  function renderConfig(data) {
+    var c = data.config || {};
+    if (c.configured) {
+      $('lg-config-summary').textContent = '_uid=' + c.uid + ' · __client_id=已配置(' + c.clientIdLength + ' 位) · 密钥：' + (c.keySource === 'env' ? '环境变量' : '本地文件');
+      $('lg-login-state').textContent = '登录态：已配置（有效期请点「测试登录」）';
+    } else {
+      $('lg-config-summary').textContent = c.message || '未配置（匿名抓取公开题）';
+      $('lg-login-state').textContent = '登录态：未配置（匿名模式）';
+    }
+  }
+
+  function loadConfig() {
+    req('/manage/luogu/config').then(renderConfig).catch(function (e) {
+      $('lg-login-state').textContent = '登录态：读取失败';
+      $('lg-config-msg').textContent = e.message;
+    });
+  }
+
+  $('lg-save-config').addEventListener('click', function () {
+    var uid = $('lg-uid').value.trim(), cid = $('lg-client-id').value.trim();
+    $('lg-config-msg').textContent = '保存中…';
+    req('/manage/luogu/config', { method: 'POST', body: JSON.stringify({ uid: uid, clientId: cid }) })
+      .then(function (d) {
+        renderConfig(d);
+        $('lg-client-id').value = '';
+        $('lg-config-msg').textContent = '已加密保存（重启后仍然有效）';
+      })
+      .catch(function (e) { $('lg-config-msg').textContent = '保存失败：' + e.message; });
+  });
+
+  $('lg-test-login').addEventListener('click', function () {
+    $('lg-config-msg').textContent = '校验中…';
+    var body = {
+      uid: $('lg-uid').value.trim(),
+      clientId: $('lg-client-id').value.trim()
+    };
+    req('/manage/luogu/test-login', { method: 'POST', body: JSON.stringify(body) })
+      .then(function (d) {
+        $('lg-login-state').textContent = '已登录：' + d.uname;
+        $('lg-config-msg').textContent = '校验通过（uid=' + d.uid + '，clientId 长度 ' + d.clientIdLength + '）';
+      })
+      .catch(function (e) {
+        $('lg-login-state').textContent = '登录校验失败';
+        $('lg-config-msg').textContent = e.message;
+      });
+  });
+
+  $('lg-clear-config').addEventListener('click', function () {
+    if (!window.confirm('确定清除已保存的洛谷登录态？')) return;
+    req('/manage/luogu/config', { method: 'POST', body: JSON.stringify({ action: 'clear' }) })
+      .then(function (d) {
+        renderConfig(d);
+        $('lg-uid').value = ''; $('lg-client-id').value = '';
+        $('lg-config-msg').textContent = '已清除，后续请求转为匿名模式';
+      })
+      .catch(function (e) { $('lg-config-msg').textContent = '清除失败：' + e.message; });
+  });
+
+  /* ---------- 标签 ---------- */
+  function loadTags() {
+    req('/manage/luogu/tags').then(function (d) {
+      var sel = $('lg-tag');
+      sel.innerHTML = '';
+      (d.tags || []).forEach(function (t) {
+        var o = document.createElement('option');
+        o.value = String(t.id); o.textContent = t.name + ' (' + t.id + ')';
+        sel.appendChild(o);
+      });
+    }).catch(function () { $('lg-tag').innerHTML = '<option value="">标签加载失败</option>'; });
+  }
+
+  /* ---------- 估算 ---------- */
+  $('lg-estimate').addEventListener('click', function () {
+    var src = selectedSources();
+    if (!src.length) { $('lg-estimate-text').textContent = '请至少选择一个来源'; return; }
+    $('lg-estimate-text').textContent = '正在读取各来源题量（每来源 1 次请求）…';
+    var qs = 'sources=' + encodeURIComponent(src.join(','))
+      + '&samples=' + encodeURIComponent($('lg-samples').value)
+      + '&delay=' + encodeURIComponent($('lg-delay').value);
+    req('/manage/luogu/estimate?' + qs).then(function (d) {
+      var e = d.estimate;
+      var detail = Object.keys(e.sources).map(function (k) { return k + ' ' + e.sources[k]; }).join(' / ');
+      $('lg-estimate-text').textContent = '约 ' + e.problems + ' 题（' + e.pages + ' 页），约 ' + e.mb
+        + ' MB，按 ' + e.delayMs + 'ms/请求约 ' + e.hours + ' 小时。明细：' + detail;
+    }).catch(function (e) { $('lg-estimate-text').textContent = '估算失败：' + e.message; });
+  });
+
+  /* ---------- 任务进度 ---------- */
+  var STATUS_CN = {
+    queued: '排队中', running: '运行中', paused: '已暂停', cancelled: '已取消',
+    done: '已完成', error: '出错（可继续）', interrupted: '已中断'
+  };
+
+  function renderJob(job) {
+    $('lg-progress-wrap').style.display = '';
+    $('lg-job-id').textContent = job.id;
+    var c = job.counts || {}, total = c.total || 0;
+    var pct = job.status === 'done' ? 100
+      : (total > 0 ? Math.min(100, Math.round((c.done / total) * 100)) : 0);
+    $('lg-progress-bar').style.width = pct + '%';
+    $('lg-progress-text').textContent = (STATUS_CN[job.status] || job.status)
+      + '：已处理 ' + c.done + (total > 0 ? ' / ' + total : '') + '（' + pct + '%）'
+      + '，成功 ' + c.ok + '，跳过 ' + c.skipped + '，失败 ' + c.failed;
+    var cur = job.cursor || {};
+    $('lg-cursor-text').textContent = '断点：' + (job.sources && job.sources[cur.sourceIndex] ? job.sources[cur.sourceIndex] : '-')
+      + ' 第 ' + cur.page + ' 页 / 第 ' + cur.pidIndex + ' 题，累计 ' + cur.processed + ' 题'
+      + (job.error ? '｜上次错误：' + job.error : '');
+    $('lg-logs').textContent = (job.logs || []).join('\n');
+    $('lg-logs').scrollTop = $('lg-logs').scrollHeight;
+    $('lg-pause').disabled = job.status !== 'running' && job.status !== 'queued';
+    $('lg-resume').disabled = ['paused', 'error', 'cancelled', 'interrupted'].indexOf(job.status) < 0;
+    $('lg-cancel').disabled = ['done', 'cancelled'].indexOf(job.status) >= 0;
+  }
+
+  function poll() {
+    if (!currentJob || polling) return;
+    polling = true;
+    req('/manage/luogu/status?jobId=' + encodeURIComponent(currentJob))
+      .then(function (job) {
+        renderJob(job);
+        $('lg-start-manual').disabled = false;
+        $('lg-start-full').disabled = false;
+        if (['running', 'queued'].indexOf(job.status) >= 0) setTimeout(poll, 2000);
+      })
+      .catch(function (e) {
+        $('lg-logs').textContent += '\n状态查询失败：' + e.message;
+        setTimeout(poll, 3000);
+      })
+      .then(function () { polling = false; });
+  }
+
+  function attachJob(id) {
+    currentJob = id;
+    $('lg-progress-text').textContent = '正在读取任务状态…';
+    $('lg-logs').textContent = '';
+    $('lg-progress-wrap').style.display = '';
+    poll();
+  }
+
+  function jobAction(action) {
+    if (!currentJob) return;
+    req('/manage/luogu/job-action', {
+      method: 'POST', body: JSON.stringify({ jobId: currentJob, action: action })
+    }).then(function (d) { renderJob(d.job); loadJobs(); })
+      .catch(function (e) { $('lg-full-hint').textContent = '操作失败：' + e.message; });
+  }
+
+  $('lg-pause').addEventListener('click', function () { jobAction('pause'); });
+  $('lg-resume').addEventListener('click', function () { jobAction('resume'); });
+  $('lg-cancel').addEventListener('click', function () { jobAction('cancel'); });
+
+  function loadJobs() {
+    req('/manage/luogu/jobs').then(function (d) {
+      var jobs = d.jobs || [];
+      if (!jobs.length) { $('lg-jobs').textContent = '暂无任务'; return; }
+      $('lg-jobs').innerHTML = '';
+      jobs.forEach(function (j) {
+        var row = document.createElement('div');
+        row.textContent = j.id + ' ｜ ' + (STATUS_CN[j.status] || j.status) + ' ｜ '
+          + (j.mode === 'full' ? (j.sources || []).join('/') : '手动') + ' ｜ '
+          + j.counts.done + ' 题（成功 ' + j.counts.ok + '，跳过 ' + j.counts.skipped + '，失败 ' + j.counts.failed + '）';
+        var btn = document.createElement('button');
+        btn.className = 'rounded button'; btn.textContent = '查看';
+        btn.style.marginLeft = '10px';
+        btn.addEventListener('click', function () { attachJob(j.id); });
+        row.appendChild(btn);
+        $('lg-jobs').appendChild(row);
+      });
+      if (!currentJob) {
+        var live = jobs.filter(function (j) { return j.status === 'running' || j.status === 'queued'; })[0];
+        if (live) attachJob(live.id);
+      }
+    }).catch(function (e) { $('lg-jobs').textContent = '任务列表加载失败：' + e.message; });
+  }
+
+  /* ---------- 启动 ---------- */
+  $('lg-start-manual').addEventListener('click', function () {
+    var body = commonOptions();
+    body.mode = 'manual';
+    body.pids = $('lg-pids').value.trim();
+    body.range = $('lg-range').value.trim();
+    var list = {
+      type: $('lg-type').value.trim() || 'P',
+      keyword: $('lg-keyword').value.trim(),
+      difficulty: numList($('lg-difficulty').value),
+      tag: selectedTags(),
+      pages: Number($('lg-pages').value) || 1
+    };
+    if (list.keyword || list.difficulty.length || list.tag.length) body.list = list;
+    if (!body.pids && !body.range && !body.list) {
+      $('lg-manual-hint').textContent = '请至少填写题号、区间或列表筛选条件之一'; return;
+    }
+    $('lg-manual-hint').textContent = '启动中…';
+    $('lg-start-manual').disabled = true;
+    req('/manage/luogu/import', { method: 'POST', body: JSON.stringify(body) })
+      .then(function (d) { $('lg-manual-hint').textContent = ''; attachJob(d.jobId); })
+      .catch(function (e) {
+        $('lg-manual-hint').textContent = '启动失败：' + e.message;
+        $('lg-start-manual').disabled = false;
+      });
+  });
+
+  $('lg-start-full').addEventListener('click', function () {
+    var src = selectedSources();
+    if (!src.length) { $('lg-full-hint').textContent = '请至少选择一个来源'; return; }
+    var max = Number($('lg-max-problems').value) || 0;
+    if (max === 0 && !window.confirm('本次不限题数上限，预计会长时间运行（按当前限速约 20 小时）。确定启动？')) return;
+    var body = commonOptions();
+    body.mode = 'full';
+    body.sources = src;
+    body.maxProblems = max;
+    body.delayMs = Number($('lg-delay').value) || 1500;
+    body.maxPages = Number($('lg-max-pages').value) || 0;
+    $('lg-full-hint').textContent = '正在估算规模并创建任务…';
+    $('lg-start-full').disabled = true;
+    req('/manage/luogu/import', { method: 'POST', body: JSON.stringify(body) })
+      .then(function (d) {
+        $('lg-full-hint').textContent = '';
+        attachJob(d.jobId);
+        loadJobs();
+      })
+      .catch(function (e) {
+        $('lg-full-hint').textContent = '启动失败：' + e.message;
+        $('lg-start-full').disabled = false;
+      });
+  });
+
+  loadConfig();
+  loadTags();
+  loadJobs();
+})();
+</script>
+{% endblock %}

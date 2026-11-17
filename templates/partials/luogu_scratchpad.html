@@ -1,0 +1,414 @@
+{# 洛谷题在线编程增强：与「递交评测」并列的按钮；结果按 Hydro 原生评测记录表格呈现；只有验证码才弹窗 #}
+{# 坑：动态浮层不要套 .section 类——全局 CSS 里 .hasjs .section{opacity:0}，动态节点拿不到 .visible 会全透明。 #}
+<script>
+(function () {
+  if (window.__luoguScratchpadInstalled) return;
+  window.__luoguScratchpadInstalled = true;
+  var retry = 0, submitting = false, lastBtnLabel = '';
+  var records = [];          // 本次页面的洛谷提交，按最新在前
+  var polling = {};          // rid -> interval
+  var $ = function (id) { return document.getElementById(id); };
+
+  var STATUS = {
+    0: ['pending', 'Waiting'], 1: ['pass', 'AC'], 2: ['fail', 'WA'],
+    3: ['fail', 'TLE'], 4: ['fail', 'MLE'], 5: ['fail', 'OLE'],
+    6: ['fail', 'RE'], 7: ['fail', 'CE'], 8: ['fail', 'SE'],
+    9: ['ignored', 'CANCELED'], 10: ['fail', 'ETC'], 11: ['fail', 'HACKED'],
+    20: ['progress', 'Judging'], 21: ['progress', 'Compiling'], 22: ['progress', 'Fetched'],
+    30: ['ignored', 'IGNORED'], 31: ['fail', 'FE'], 32: ['pass', 'HACK OK'], 33: ['fail', 'HACK FAIL']
+  };
+  function statusOf(s) { return STATUS[s] || ['pending', String(s === undefined ? '?' : s)]; }
+
+  function esc(s) {
+    return String(s === undefined || s === null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  function req(url, opts) {
+    opts = opts || {};
+    opts.credentials = 'same-origin';
+    opts.headers = Object.assign({ Accept: 'application/json', 'Content-Type': 'application/json' }, opts.headers || {});
+    return fetch(url, opts).then(function (r) { return r.json(); }).then(function (d) {
+      if (d && d.error) {
+        var e = d.error;
+        throw new Error((e.params && e.params.length) ? e.params.join(' ') : (e.message || '请求失败'));
+      }
+      return d;
+    });
+  }
+
+  function currentPid() {
+    try {
+      var p = window.UiContext && window.UiContext.pdoc;
+      if (p && (p.pid || p.docId)) return String(p.pid || p.docId);
+    } catch (e) { /* ignore */ }
+    var m = location.pathname.match(/^\/p\/([^/]+)/);
+    return m ? decodeURIComponent(m[1]) : '';
+  }
+
+  function ideCode() {
+    if (window.editor && typeof window.editor.getValue === 'function') return window.editor.getValue();
+    if (window.monaco && window.monaco.editor && window.monaco.editor.getModels) {
+      var models = window.monaco.editor.getModels();
+      if (models.length) return models[0].getValue();
+    }
+    return '';
+  }
+
+  function ideLang() {
+    var sel = document.querySelector('.scratchpad__toolbar select.select')
+      || document.querySelector('.scratchpad-container select.select');
+    return sel ? sel.value : 'cc.cc14o2';
+  }
+
+  function btnState(label, busy) {
+    var btn = document.querySelector('.luogu-scratchpad-submit');
+    if (!btn || lastBtnLabel === label) return;
+    lastBtnLabel = label;
+    btn.disabled = !!busy;
+    btn.className = 'scratchpad__toolbar__item scratchpad__toolbar__button luogu-scratchpad-submit '
+      + (busy ? 'disabled' : 'enabled');
+    btn.innerHTML = '<div><span class="icon icon-send"></span> ' + esc(label) + '</div>';
+  }
+
+  /** 右下角气泡提示（类似 "You have a new message"），自动消失，可点击查看 */
+  function toast(text, click) {
+    var box = $('lg-sp-toast');
+    if (!box) {
+      box = document.createElement('div');
+      box.id = 'lg-sp-toast';
+      box.style.cssText = 'position:fixed;right:24px;bottom:24px;z-index:2147483100;'
+        + 'max-width:340px;padding:12px 16px;background:#fff;color:#24292f;'
+        + 'border:1px solid #d0d7de;border-left:4px solid #2188ff;border-radius:6px;'
+        + 'box-shadow:0 6px 24px rgba(0,0,0,.18);font-size:14px;line-height:1.5;'
+        + 'opacity:0;transform:translateY(8px);transition:opacity .2s,transform .2s;pointer-events:none';
+      document.body.appendChild(box);
+    }
+    box.textContent = text;
+    box.style.pointerEvents = click ? 'auto' : 'none';
+    box.style.cursor = click ? 'pointer' : 'default';
+    box.onclick = click || null;
+    // 强制 reflow 以重播入场动画
+    box.style.opacity = '0'; box.style.transform = 'translateY(8px)';
+    void box.offsetWidth;
+    box.style.opacity = '1'; box.style.transform = 'translateY(0)';
+    if (toast._t) clearTimeout(toast._t);
+    toast._t = setTimeout(function () {
+      box.style.opacity = '0'; box.style.transform = 'translateY(8px)';
+    }, 5000);
+  }
+  // 保留 hint 名，内部走气泡
+  function hint(text, click) { toast(text, click); }
+
+  /** 展开原生「评测记录」面板（工具栏 Records 按钮，Alt+R）并滚动高亮我们的行 */
+  function revealRecords() {
+    var body = recordsBody();
+    if (!body) {
+      var toggle = document.querySelector('[data-global-hotkey="alt+r"]');
+      if (toggle) toggle.click();
+      body = recordsBody();
+    }
+    if (!body) return;
+    var first = body.querySelector('tr[data-luogu-row]');
+    if (first) {
+      first.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      first.style.transition = 'background .3s';
+      first.style.background = '#fff3cd';
+      setTimeout(function () { first.style.background = ''; }, 1800);
+    }
+  }
+
+  /* ---------- 原生评测记录表格：插入洛谷/本地两行，React 重渲染后自动补回 ---------- */
+  function recordsBody() {
+    return document.querySelector('.scratchpad__records__table tbody');
+  }
+
+  function makeRow(rec, kind) {
+    var st = statusOf(rec.status);
+    var tr = document.createElement('tr');
+    tr.setAttribute('data-luogu-row', rec.rid + '-' + kind);
+    tr.style.cursor = 'pointer';
+    var mem = rec.memoryKb === null || rec.memoryKb === undefined
+      ? '-' : Math.ceil(rec.memoryKb / 1000) + ' MB';
+    var tim = rec.timeMs === null || rec.timeMs === undefined
+      ? '-' : (rec.timeMs / 1000).toFixed(1) + 's';
+    tr.innerHTML = ''
+      + '<td class="col--detail record-status--border ' + st[0] + '">'
+      + '<span class="icon record-status--icon ' + st[0] + '"></span>'
+      + '<span class="icol icol--pretest"></span>'
+      + '<span class="record-status--text ' + st[0] + '">' + esc(st[1]) + '</span>'
+      + '<span class="icol icol--stat">' + (kind === 'local' ? 'LOCAL' : 'LUOGU') + '</span>'
+      + '</td>'
+      + '<td class="col--memory">' + esc(mem) + '</td>'
+      + '<td class="col--time">' + esc(tim) + '</td>'
+      + '<td class="col--at"><time>' + esc(kind === 'local' ? ('#' + rec.rid) : ('#' + rec.rid)) + '</time></td>';
+    tr.addEventListener('click', function () { openDetail(rec); });
+    return tr;
+  }
+
+  function renderRows() {
+    var body = recordsBody();
+    if (!body) return;
+    // 幂等补齐：只在行缺失/多余时才改 DOM。
+    // 绝不能对 tbody 挂 MutationObserver 再在回调里重绘——自己插入行会再次触发回调，
+    // 异步 microtask 里同步标志已复位，导致无限递归、页面卡死（用户实测过）。
+    var want = {};
+    records.forEach(function (rec) {
+      want[rec.rid + '-luogu'] = rec;
+      if (rec.local) want[rec.rid + '-local'] = rec.local;
+    });
+    var old = body.querySelectorAll('tr[data-luogu-row]');
+    for (var i = 0; i < old.length; i++) {
+      if (!want[old[i].getAttribute('data-luogu-row')]) {
+        body.removeChild(old[i]);
+      }
+    }
+    records.forEach(function (rec) {
+      if (!body.querySelector('tr[data-luogu-row="' + rec.rid + '-luogu"]')) {
+        body.insertBefore(makeRow(rec, 'luogu'), body.firstChild);
+      }
+      if (rec.local && !body.querySelector('tr[data-luogu-row="' + rec.rid + '-local"]')) {
+        body.insertBefore(makeRow(rec.local, 'local'), body.firstChild);
+      }
+    });
+  }
+
+  /* ---------- 详情 / 验证码弹层（只在这两种情况弹出） ---------- */
+  function ensureUI() {
+    if ($('lg-sp-panel')) return;
+    var overlay = document.createElement('div');
+    overlay.id = 'lg-sp-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:2147483000;display:none';
+    overlay.addEventListener('click', closeModal);
+
+    var panel = document.createElement('div');
+    panel.id = 'lg-sp-panel';
+    panel.style.cssText = 'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);'
+      + 'width:min(760px,92vw);max-height:82vh;overflow:auto;z-index:2147483647;'
+      + 'background:#fff;color:#24292f;opacity:1;visibility:visible;'
+      + 'border:1px solid #d0d7de;border-radius:8px;box-shadow:0 12px 48px rgba(0,0,0,.3);display:none';
+    panel.innerHTML = ''
+      + '<div style="padding:14px 18px 0;position:relative;border-bottom:1px solid #eaecef">'
+      + '<h1 id="lg-sp-title" style="font-size:18px;margin:0 0 12px;color:#24292f">洛谷评测详情</h1>'
+      + '<button type="button" id="lg-sp-close" style="position:absolute;right:16px;top:12px">关闭</button>'
+      + '</div>'
+      + '<div style="padding:14px 18px;color:#24292f">'
+      + '<p id="lg-sp-msg" style="color:#6a737d"></p>'
+      + '<div id="lg-sp-captcha" style="display:none;padding:12px;border:1px solid #f0c36d;background:#fff8e6;border-radius:6px;color:#5c4813">'
+      + '<p style="margin:0 0 10px"><strong>洛谷要求图形验证码</strong>，输入后自动带原代码重提（最多 3 次）。</p>'
+      + '<img id="lg-sp-captcha-img" alt="验证码" style="max-height:60px;vertical-align:middle;margin-right:10px;background:#fff;border:1px solid #ddd">'
+      + '<button type="button" id="lg-sp-captcha-refresh">换一张</button>'
+      + '<input id="lg-sp-captcha-input" type="text" placeholder="验证码" style="width:140px;margin-left:8px;color:#24292f;background:#fff">'
+      + '<button type="button" id="lg-sp-captcha-ok" style="margin-left:8px">确认重提</button>'
+      + '<p id="lg-sp-captcha-error" style="margin:8px 0 0;color:#b00"></p>'
+      + '<p style="margin:8px 0 0"><a id="lg-sp-captcha-manual" href="https://www.luogu.com.cn/" target="_blank" rel="noopener">去洛谷手动提交</a></p>'
+      + '</div>'
+      + '<div id="lg-sp-detail"></div>'
+      + '<p><a id="lg-sp-link" href="https://www.luogu.com.cn/" target="_blank" rel="noopener">在洛谷查看原始记录</a></p>'
+      + '</div>';
+    document.body.appendChild(overlay);
+    document.body.appendChild(panel);
+    $('lg-sp-close').addEventListener('click', closeModal);
+    $('lg-sp-captcha-ok').addEventListener('click', function () {
+      var v = $('lg-sp-captcha-input').value.trim();
+      if (v) submit(v);
+    });
+    $('lg-sp-captcha-input').addEventListener('keydown', function (ev) {
+      if (ev.key === 'Enter') { ev.preventDefault(); $('lg-sp-captcha-ok').click(); }
+    });
+    $('lg-sp-captcha-refresh').addEventListener('click', function () {
+      $('lg-sp-captcha-error').textContent = '';
+      req('/luogu/captcha').then(function (d) { showCaptcha(d.image, d.imageError); })
+        .catch(function (e) { showCaptcha('', e.message); });
+    });
+    document.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Escape') closeModal();
+    });
+  }
+
+  function openModal() {
+    ensureUI();
+    $('lg-sp-overlay').style.display = 'block';
+    $('lg-sp-panel').style.display = 'block';
+    $('lg-sp-panel').style.opacity = '1';
+    $('lg-sp-panel').style.visibility = 'visible';
+  }
+
+  function closeModal() {
+    var o = $('lg-sp-overlay'), p = $('lg-sp-panel');
+    if (o) o.style.display = 'none';
+    if (p) p.style.display = 'none';
+  }
+
+  function showCaptcha(image, imageError) {
+    openModal();
+    $('lg-sp-title').textContent = '洛谷验证码';
+    $('lg-sp-detail').innerHTML = '';
+    $('lg-sp-captcha').style.display = 'block';
+    var img = $('lg-sp-captcha-img');
+    if (image) { img.src = image; img.style.display = 'inline-block'; }
+    else { img.removeAttribute('src'); img.style.display = 'none'; }
+    $('lg-sp-captcha-error').textContent = image ? '' : (imageError || '验证码图片获取失败，点「换一张」重试');
+    var pid = currentPid();
+    $('lg-sp-captcha-manual').href = pid
+      ? 'https://www.luogu.com.cn/problem/' + encodeURIComponent(pid) : 'https://www.luogu.com.cn/';
+    $('lg-sp-captcha-input').value = '';
+    $('lg-sp-captcha-input').focus();
+    $('lg-sp-msg').textContent = '';
+  }
+
+  function openDetail(rec) {
+    openModal();
+    $('lg-sp-title').textContent = '洛谷评测详情 #' + esc(rec.rid);
+    $('lg-sp-captcha').style.display = 'none';
+    $('lg-sp-link').href = 'https://www.luogu.com.cn/record/' + encodeURIComponent(rec.rid);
+    var st = statusOf(rec.status);
+    var stText = rec.statusText || st[1];
+    var html = '<p><strong>' + esc(stText) + '</strong>　分数：'
+      + (rec.score === null || rec.score === undefined ? '-' : esc(rec.score))
+      + '　耗时：' + (rec.timeMs === null || rec.timeMs === undefined ? '-' : esc(rec.timeMs) + ' ms')
+      + '　内存：' + (rec.memoryKb === null || rec.memoryKb === undefined ? '-' : esc(rec.memoryKb) + ' KB') + '</p>';
+    if (rec.local) {
+      var ls = statusOf(rec.local.status);
+      html += '<p>本地评测：<strong>' + esc(ls[1]) + '</strong>'
+        + (rec.local.rid ? '（<a href="/record/' + encodeURIComponent(rec.local.rid) + '" target="_blank">查看本地记录</a>）' : '')
+        + '</p>';
+    }
+    if (rec.compileError) html += '<pre style="max-height:200px;overflow:auto">' + esc(rec.compileError) + '</pre>';
+    (rec.subtasks || []).forEach(function (s) {
+      var ss = statusOf(s.status);
+      html += '<h3>子任务 #' + (s.id + 1) + '：' + esc(ss[1]) + '</h3>';
+      var cases = s.testCases || [];
+      if (!cases.length) { html += '<p style="color:#6a737d">无逐测试点明细。</p>'; return; }
+      html += '<table style="border-collapse:collapse;width:100%"><thead><tr><th>#</th><th>状态</th><th>得分</th><th>耗时</th><th>内存</th></tr></thead><tbody>';
+      cases.forEach(function (c) {
+        var cs = statusOf(c.status);
+        html += '<tr><td>' + (c.id + 1) + '</td><td>' + esc(cs[1]) + '</td><td>'
+          + (c.score === null ? '-' : esc(c.score)) + '</td><td>'
+          + (c.timeMs === null ? '-' : esc(c.timeMs) + ' ms') + '</td><td>'
+          + (c.memoryKb === null ? '-' : esc(c.memoryKb) + ' KB') + '</td></tr>';
+      });
+      html += '</tbody></table>';
+    });
+    // 学生端只展示评测结果；样例反算是后台/管理员功能，不在这里出现
+    $('lg-sp-detail').innerHTML = html;
+    $('lg-sp-msg').textContent = rec.terminal ? '评测完成' : '等待洛谷评测…';
+  }
+
+  function upsert(rec) {
+    var idx = -1;
+    for (var i = 0; i < records.length; i++) if (records[i].rid === rec.rid) { idx = i; break; }
+    if (idx >= 0) records[idx] = rec;
+    else records.unshift(rec);
+    renderRows();
+  }
+
+  function poll(rid) {
+    if (!rid || !/^\d+$/.test(String(rid))) { toast('洛谷未返回评测记录号，请稍后到洛谷查看'); return; }
+    if (polling[rid]) clearInterval(polling[rid]);
+    var failures = 0;
+    function tick() {
+      req('/luogu/record/' + encodeURIComponent(rid)).then(function (d) {
+        failures = 0;
+        upsert(d);
+        if (d.terminal) {
+          clearInterval(polling[rid]); delete polling[rid];
+          var label = '洛谷 ' + (d.statusText || statusOf(d.status)[1])
+            + (d.local ? ' · 本地 ' + (d.local.statusText || statusOf(d.local.status)[1]) : '');
+          // 只有 AC 才自动弹评测记录；其它状态只出气泡
+          if (d.status === 12) {
+            toast('评测完成：' + label + '（点此看详情）', function () { openDetail(d); });
+            openDetail(d);
+          } else {
+            toast('评测完成：' + label);
+          }
+        }
+      }).catch(function (e) {
+        failures += 1;
+        hint('#' + rid + ' 查询失败：' + e.message);
+        if (failures >= 5) { clearInterval(polling[rid]); delete polling[rid]; }
+      });
+    }
+    tick();
+    polling[rid] = setInterval(tick, 1500);
+  }
+
+  function submit(captcha) {
+    if (submitting) return;
+    var code = ideCode();
+    if (!code.trim()) { hint('IDE 里还没有代码'); return; }
+    var pid = currentPid();
+    if (!pid) { hint('无法识别当前题目'); return; }
+    var payload = { code: code, lang: ideLang() };
+    if (captcha) payload.captcha = captcha;
+    submitting = true;
+    btnState('提交中…', true);
+    hint('正在提交到 Luogu…');
+    req('/luogu/submit/' + encodeURIComponent(pid), { method: 'POST', body: JSON.stringify(payload) })
+      .then(function (d) {
+        submitting = false;
+        btnState('提交到 Luogu', false);
+        if (d.needCaptcha) {
+          retry += 1;
+          if (retry > 3) { hint('验证码重试次数过多，请稍后再试'); return; }
+          showCaptcha(d.image, d.imageError);
+          hint('需要输入图形验证码');
+          return;
+        }
+        retry = 0;
+        upsert({
+          rid: d.rid, status: 0, terminal: false, score: null, timeMs: null, memoryKb: null,
+          local: d.localRid ? { rid: d.localRid, status: 0, terminal: false } : null,
+          subtasks: [], sampleFixes: []
+        });
+        toast('已提交到洛谷，正在评测…', revealRecords);
+        revealRecords();
+        poll(d.rid);
+      })
+      .catch(function (e) {
+        submitting = false;
+        btnState('提交到 Luogu', false);
+        if (/验证码|captcha/i.test(e.message || '')) {
+          retry += 1;
+          if (retry <= 3) {
+            hint('需要输入图形验证码');
+            req('/luogu/captcha').then(function (d) { showCaptcha(d.image, d.imageError); })
+              .catch(function (ce) { showCaptcha('', ce.message); });
+            return;
+          }
+        }
+        hint('提交失败：' + e.message);
+      });
+  }
+
+  function installButton() {
+    var submitBtn = document.querySelector('.scratchpad__toolbar__submit');
+    if (!submitBtn) return;
+    var btn = document.querySelector('.luogu-scratchpad-submit');
+    if (!btn) {
+      btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'scratchpad__toolbar__item scratchpad__toolbar__button enabled luogu-scratchpad-submit';
+      btn.setAttribute('data-tooltip', '把 IDE 里的代码提交到洛谷评测');
+      btn.addEventListener('click', function (ev) { ev.preventDefault(); submit(null); });
+      submitBtn.parentNode.insertBefore(btn, submitBtn.nextSibling);
+      lastBtnLabel = '';
+    }
+    btnState(submitting ? '提交中…' : '提交到 Luogu', submitting);
+    renderRows();
+  }
+
+  // 只用轮询补按钮/行，绝不挂 MutationObserver：插件自己插入的行会触发 observer，
+  // 异步回调里再次 install → 再插行，形成无限递归把页面卡死（用户实测 Chrome 弹「页面无响应」）。
+  // 500ms 轮询足够跟住 React 重渲染，且 installButton/renderRows 都是幂等的。
+  installButton();
+  setInterval(installButton, 500);
+
+  // 自查入口：只显示弹窗，不发提交
+  window.__luoguShowCaptcha = function () {
+    req('/luogu/captcha').then(function (d) { showCaptcha(d.image, d.imageError); })
+      .catch(function (e) { showCaptcha('', e.message); });
+  };
+})();
+</script>

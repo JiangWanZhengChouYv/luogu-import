@@ -1,0 +1,281 @@
+{% extends "layout/basic.html" %}
+{% block content %}
+{{ set(UiContext, 'pdoc', pdoc) }}
+<div class="row">
+  <div class="medium-9 columns">
+    <div class="section">
+      <div class="section__header">
+        <h1 class="section__title">提交到 Luogu</h1>
+        <div class="section__tools">
+          <span class="tool-button">{{ luoguPid }}</span>
+        </div>
+      </div>
+      <div class="section__body typo" name="submit_section">
+        {% if not loginConfigured %}
+        <blockquote class="warn">尚未绑定洛谷提交账号。请到「第三方账号」页绑定自己的账号后再提交。</blockquote>
+        {% elif accountSource == 'shared' %}
+        <blockquote class="warn">当前使用管理员共享账号提交（你尚未绑定个人提交账号）。建议到「第三方账号」页绑定自己的账号。</blockquote>
+        {% endif %}
+        {% if accountProfile and accountProfile.uname %}
+        <p class="supplementary">提交账号：{{ accountProfile.uname }}（<a href="{{ accountProfile.home }}" target="_blank" rel="noopener">洛谷主页</a>）</p>
+        {% endif %}
+        <form id="lg-submit-form" method="post" enctype="multipart/form-data">
+          <div class="row">
+            <div class="medium-6 columns">
+              <label class="material textbox">代码语言
+                <select name="lang" id="lg-lang" class="select">
+                  {% for key, label in langRange %}
+                  <option value="{{ key }}"{% if key == codeLang %} selected{% endif %}{% if key not in supported %} disabled{% endif %}>{{ label }}{% if key not in supported %}（洛谷不支持）{% endif %}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <p class="supplementary">洛谷只接收 C++ 系列；O2 通过语言名里的 (O2) 选项开启。</p>
+            </div>
+            <div class="medium-6 columns">
+              <label class="material textbox">或上传代码文件
+                <input type="file" id="lg-file" class="textbox">
+              </label>
+            </div>
+          </div>
+          {{ form.form_textarea({label:'代码', columns:12, name:'code', extra_class:'monospace', autofocus:true, nospellcheck:true}) }}
+          <div class="row"><div class="columns">
+            <button type="submit" id="lg-submit-btn" class="rounded primary button">提交到 Luogu</button>
+            <span id="lg-submit-hint" class="supplementary"></span>
+          </div></div>
+        </form>
+
+        <div id="lg-captcha" style="display:none;margin-top:16px">
+          <hr>
+          <p><strong>洛谷要求图形验证码</strong>，输入后会自动带上原代码重新提交（最多 3 次）。</p>
+          <img id="lg-captcha-img" alt="验证码" style="vertical-align:middle;margin-right:12px;max-height:60px">
+          <button type="button" id="lg-captcha-refresh" class="rounded button">换一张</button>
+          <div class="row"><div class="medium-4 columns">
+            <label class="material textbox">验证码
+              <input id="lg-captcha-input" type="text" class="textbox" autocomplete="off" placeholder="请输入图中字符">
+            </label>
+          </div></div>
+          <button type="button" id="lg-captcha-confirm" class="rounded primary button">确认并重新提交</button>
+          <p id="lg-captcha-error" class="supplementary" style="color:#b00"></p>
+          <p class="supplementary"><a id="lg-captcha-manual" href="https://www.luogu.com.cn/" target="_blank" rel="noopener">打不开验证码？去洛谷手动提交</a></p>
+        </div>
+
+        <div id="lg-result-wrap" style="display:none;margin-top:16px">
+          <hr>
+          <h2>洛谷评测结果 <span id="lg-rid" class="supplementary"></span></h2>
+          <p id="lg-result-summary"></p>
+          <div id="lg-result-error"></div>
+          <div id="lg-result-detail"></div>
+          <p><a id="lg-luogu-link" href="https://www.luogu.com.cn/" target="_blank" rel="noopener">在洛谷查看原始记录</a></p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="medium-3 columns">
+    {% include "partials/problem_sidebar.html" %}
+  </div>
+</div>
+
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var retry = 0;
+  var timer = null;
+  var pending = null;
+
+  function esc(s) {
+    return String(s === undefined || s === null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  function req(url, opts) {
+    opts = opts || {};
+    opts.credentials = 'same-origin';
+    opts.headers = Object.assign({ Accept: 'application/json', 'Content-Type': 'application/json' }, opts.headers || {});
+    return fetch(url, opts).then(function (r) { return r.json(); }).then(function (d) {
+      if (d && d.error) {
+        var e = d.error;
+        throw new Error((e.params && e.params.length) ? e.params.join(' ') : (e.message || '请求失败'));
+      }
+      return d;
+    });
+  }
+
+  function codeValue() {
+    var el = document.querySelector('textarea[name="code"]');
+    return el ? el.value : '';
+  }
+
+  function showCaptcha(image, imageError) {
+    openCaptcha();
+    var img = $('lg-captcha-img');
+    if (image) {
+      img.src = image;
+      img.style.display = 'inline-block';
+    } else {
+      img.removeAttribute('src');
+      img.style.display = 'none';
+    }
+    $('lg-captcha-error').textContent = image ? '' : (imageError || '验证码图片获取失败，点「换一张」重试');
+    var pm = location.pathname.match(/\/luogu\/submit\/([^/]+)/);
+    $('lg-captcha-manual').href = pm
+      ? 'https://www.luogu.com.cn/problem/' + encodeURIComponent(decodeURIComponent(pm[1]))
+      : 'https://www.luogu.com.cn/';
+    $('lg-captcha-input').value = '';
+    $('lg-captcha-input').focus();
+    try { $('lg-captcha').scrollIntoView({ block: 'center' }); } catch (e) { /* ignore */ }
+  }
+
+  function openCaptcha() {
+    $('lg-captcha').style.display = 'block';
+    $('lg-captcha').style.opacity = '1';
+    $('lg-captcha').style.visibility = 'visible';
+  }
+
+  function submit(captcha) {
+    var code = codeValue();
+    if (!code.trim()) { $('lg-submit-hint').textContent = '代码不能为空'; return; }
+    var lang = $('lg-lang').value;
+    if (!lang) { $('lg-submit-hint').textContent = '请选择代码语言'; return; }
+    $('lg-submit-btn').disabled = true;
+    $('lg-submit-hint').textContent = '正在提交到洛谷…';
+    var body = { code: code, lang: lang };
+    if (captcha) body.captcha = captcha;
+    req(location.pathname, { method: 'POST', body: JSON.stringify(body) })
+      .then(function (d) {
+        $('lg-submit-hint').textContent = '';
+        $('lg-submit-btn').disabled = false;
+        if (d.needCaptcha) {
+          retry += 1;
+          if (retry > 3) {
+            $('lg-submit-hint').textContent = '验证码重试次数过多，请稍后再试';
+            $('lg-captcha').style.display = 'none';
+            return;
+          }
+          pending = { code: code, lang: lang };
+          showCaptcha(d.image, d.imageError);
+          $('lg-submit-hint').textContent = '需要输入图形验证码';
+          return;
+        }
+        $('lg-captcha').style.display = 'none';
+        retry = 0;
+        startPolling(d.rid);
+      })
+      .catch(function (e) {
+        $('lg-submit-btn').disabled = false;
+        // 兜底：后端以普通错误返回但消息含验证码时，也要把验证码区显示出来
+        if (/验证码|captcha/i.test(e.message || '')) {
+          retry += 1;
+          if (retry <= 3) {
+            $('lg-submit-hint').textContent = '洛谷要求图形验证码，正在获取图片…';
+            req('/luogu/captcha').then(function (d) { showCaptcha(d.image, d.imageError); })
+              .catch(function (ce) { showCaptcha('', ce.message); });
+            return;
+          }
+        }
+        $('lg-submit-hint').textContent = '提交失败：' + e.message;
+      });
+  }
+
+  function renderRecord(d) {
+    $('lg-result-wrap').style.display = '';
+    $('lg-rid').textContent = '#' + esc(d.rid);
+    $('lg-luogu-link').href = d.luoguUrl || 'https://www.luogu.com.cn/';
+    var summary = '<strong>洛谷：' + esc(d.statusText) + '</strong>'
+      + '　分数：' + (d.score === null ? '-' : esc(d.score))
+      + '　耗时：' + (d.timeMs === null ? '-' : esc(d.timeMs) + ' ms')
+      + '　内存：' + (d.memoryKb === null ? '-' : esc(d.memoryKb) + ' KB');
+    if (d.local) {
+      summary += '<br>本地：<strong>' + esc(d.local.statusText) + '</strong>'
+        + (d.local.rid ? '（<a href="/record/' + encodeURIComponent(d.local.rid) + '" target="_blank">查看本地记录</a>）' : '');
+    }
+    // 学生端只展示评测结果，不显示后台样例反算信息
+    $('lg-result-summary').innerHTML = summary;
+    $('lg-result-error').innerHTML = d.compileError
+      ? '<pre style="max-height:260px;overflow:auto">' + esc(d.compileError) + '</pre>' : '';
+    var html = '';
+    (d.subtasks || []).forEach(function (s) {
+      html += '<h3>子任务 #' + (s.id + 1) + '：' + esc(s.statusText)
+        + (s.score === null ? '' : '（' + esc(s.score) + ' 分）') + '</h3>';
+      var cases = s.testCases || [];
+      if (!cases.length) { html += '<p class="supplementary">无逐测试点数据（洛谷未下发明细，或记录对当前账号不可见）。</p>'; return; }
+      html += '<table class="data-table"><thead><tr><th>#</th><th>状态</th><th>得分</th><th>耗时</th><th>内存</th><th>说明</th></tr></thead><tbody>';
+      cases.forEach(function (c) {
+        html += '<tr><td>' + (c.id + 1) + '</td><td>' + esc(c.statusText) + '</td><td>'
+          + (c.score === null ? '-' : esc(c.score)) + '</td><td>'
+          + (c.timeMs === null ? '-' : esc(c.timeMs) + ' ms') + '</td><td>'
+          + (c.memoryKb === null ? '-' : esc(c.memoryKb) + ' KB') + '</td><td>'
+          + esc(c.description) + '</td></tr>';
+      });
+      html += '</tbody></table>';
+    });
+    if (!html) {
+      html = '<p class="supplementary">' + (d.detailAvailable ? '暂无子任务明细。' : '洛谷未下发逐测试点明细（通常仅本人提交可见），可点上方链接到洛谷查看。') + '</p>';
+    }
+    $('lg-result-detail').innerHTML = html;
+  }
+
+  function startPolling(rid) {
+    if (!rid || !/^\d+$/.test(String(rid))) {
+      $('lg-submit-hint').textContent = '洛谷未返回评测记录号，请稍后到洛谷查看';
+      return;
+    }
+    $('lg-result-wrap').style.display = '';
+    $('lg-rid').textContent = '#' + esc(rid);
+    $('lg-result-summary').textContent = '等待洛谷评测…';
+    $('lg-result-detail').innerHTML = '';
+    $('lg-result-error').innerHTML = '';
+    $('lg-luogu-link').href = 'https://www.luogu.com.cn/record/' + encodeURIComponent(rid);
+    if (timer) clearInterval(timer);
+    var failures = 0;
+    function tick() {
+      req('/luogu/record/' + encodeURIComponent(rid))
+        .then(function (d) {
+          failures = 0;
+          renderRecord(d);
+          if (d.terminal) { clearInterval(timer); timer = null; }
+        })
+        .catch(function (e) {
+          failures += 1;
+          $('lg-result-summary').textContent = '查询失败（' + failures + ' 次）：' + e.message;
+          if (failures >= 5) { clearInterval(timer); timer = null; }
+        });
+    }
+    tick();
+    timer = setInterval(tick, 1500);
+  }
+
+  $('lg-submit-form').addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    submit(null);
+  });
+
+  $('lg-captcha-confirm').addEventListener('click', function () {
+    var v = $('lg-captcha-input').value.trim();
+    if (!v) { $('lg-captcha-input').focus(); return; }
+    submit(v);
+  });
+
+  $('lg-captcha-input').addEventListener('keydown', function (ev) {
+    if (ev.key === 'Enter') { ev.preventDefault(); $('lg-captcha-confirm').click(); }
+  });
+
+  $('lg-captcha-refresh').addEventListener('click', function () {
+    $('lg-captcha-error').textContent = '';
+    req('/luogu/captcha').then(function (d) { showCaptcha(d.image, d.imageError); })
+      .catch(function (e) { showCaptcha('', e.message); });
+  });
+
+  $('lg-file').addEventListener('change', function () {
+    var f = this.files && this.files[0];
+    if (!f) return;
+    var reader = new FileReader();
+    reader.onload = function () {
+      var el = document.querySelector('textarea[name="code"]');
+      if (el) el.value = String(reader.result || '');
+    };
+    reader.readAsText(f);
+  });
+})();
+</script>
+{% endblock %}
