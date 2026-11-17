@@ -86,8 +86,36 @@ export function looksLikeLuoguPid(pid: string): boolean {
 /** 题目来源标记集合：新导入的题落一条，识别时标记优先、前缀兜底 */
 let markerColl: any = null;
 
+/**
+ * 标记的同步内存副本。
+ * 题目页的侧栏注入发生在 handler/create 阶段，那里没法 await 数据库，
+ * 所以把已标记的 pid 预加载进 Set，渲染时同步判断。
+ * 这样「本站自带的 P1000」不会被误判成洛谷题（前缀判断会误判）。
+ */
+const markedCache = new Set<string>();
+let markedCacheReady = false;
+
 export function initSourceMarkers(collection: any) {
     markerColl = collection;
+    // 启动时预加载，失败也不影响主流程（只是侧栏按钮不显示）
+    collection.find({}).project({ domainId: 1, hydroPid: 1 }).toArray()
+        .then((docs: any[]) => {
+            for (const d of docs) {
+                if (d?.domainId && d?.hydroPid) markedCache.add(markerKey(String(d.domainId), String(d.hydroPid)));
+            }
+            markedCacheReady = true;
+            logger.info('loaded %d luogu problem markers into memory', markedCache.size);
+        })
+        .catch((e: Error) => { logger.warn('preload markers failed: %s', e.message); });
+}
+
+/** 同步判断：这个 pid 是不是本插件导入过的题 */
+export function isLuoguProblemSync(domainId: string, pid: string, allowPrefixFallback = false): boolean {
+    if (markedCache.has(markerKey(domainId, pid))) return true;
+    // 仅在「一题都没标记」且显式允许时才退回前缀判断，
+    // 避免把 Hydro 自带的 P1000 之类误认成洛谷题。
+    if (allowPrefixFallback && markedCacheReady && markedCache.size === 0) return looksLikeLuoguPid(pid);
+    return false;
 }
 
 export function markerKey(domainId: string, pid: string) {
@@ -107,6 +135,7 @@ export async function markLuoguProblem(domainId: string, hydroPid: string, sourc
             },
             { upsert: true },
         );
+        markedCache.add(markerKey(domainId, hydroPid));
     } catch (e) {
         logger.warn('mark source failed for %s: %s', hydroPid, e.message);
     }
@@ -138,12 +167,19 @@ export async function listMarkedPids(domainId: string): Promise<Set<string>> {
     return out;
 }
 
-export async function isLuoguProblem(domainId: string, pid: string): Promise<boolean> {
+/**
+ * 异步判断（提交入口用）：以标记集合为准。
+ * 前缀只在「一题都没标记」且 allowPrefixFallback 时兜底，
+ * 否则本站自带题（如 Hydro 演示题 P1000）会被允许提交到洛谷。
+ */
+export async function isLuoguProblem(domainId: string, pid: string, allowPrefixFallback = false): Promise<boolean> {
+    if (markedCache.has(markerKey(domainId, pid))) return true;
     if (markerColl) {
         const doc = await markerColl.findOne({ _id: markerKey(domainId, pid) }).catch(() => null);
-        if (doc) return true;
+        if (doc) { markedCache.add(markerKey(domainId, pid)); return true; }
     }
-    return looksLikeLuoguPid(pid);
+    if (allowPrefixFallback && markedCache.size === 0) return looksLikeLuoguPid(pid);
+    return false;
 }
 
 function asArray(value: any): any[] {

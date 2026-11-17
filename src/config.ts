@@ -10,11 +10,19 @@
  */
 import crypto from 'crypto';
 import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import { Logger } from 'hydrooj';
 
 const logger = new Logger('luogu-import/config');
 
-const KEY_FILE = '/root/.hydro/luogu.key';
+/**
+ * 密钥文件位置。原来写死 '/root/.hydro/luogu.key'，只在 root + Docker 下成立；
+ * 非 root / 非 Docker 安装时该目录不存在，写密钥会 ENOENT，导致**保存凭据直接失败**。
+ * 现在按 LUOGU_KEY_FILE 环境变量 → $HYDRO_HOME → ~/.hydro 依次解析。
+ */
+const KEY_FILE = process.env.LUOGU_KEY_FILE
+    || path.join(process.env.HYDRO_HOME || path.join(os.homedir(), '.hydro'), 'luogu.key');
 const DOC_ID = 'credentials';
 
 let coll: any = null;
@@ -48,6 +56,7 @@ function loadKey(): Buffer {
     } catch {
         const buf = crypto.randomBytes(32);
         try {
+            fs.mkdirSync(path.dirname(KEY_FILE), { recursive: true });
             fs.writeFileSync(KEY_FILE, buf.toString('hex'), { flag: 'wx', mode: 0o600 });
             fs.chmodSync(KEY_FILE, 0o600);
         } catch (e) {

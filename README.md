@@ -74,10 +74,18 @@ HydroOJ 的洛谷插件：**拉题 → 多语言题面 → 本地样例评测 �
 | 系统设置 / 站点名 / 公告 | **不写** | 插件不修改这些 |
 | 已有题目 | **不动** | 导入时同名题默认跳过，需显式 `overwrite` 才覆盖 |
 
-已知兼容性：在 Hydro **5.0.7 / 5.1.0**（`@hydrooj/ui-default` 4.58.x / 4.59.x）上验证。
-两个版本里 `problem_sidebar_normal.html` 与 `nav.html` 的内容完全一致，因此覆盖不会错位。
-更低版本未测试；若模板结构差异较大，删除 `templates/partials/{nav,problem_sidebar_normal}.html`
-即可让插件只保留后端功能（拉题 / 提交接口仍可用，但题目页不会有侧栏按钮）。
+**验证范围**：Hydro **5.0.7 / 5.1.0**，`@hydrooj/ui-default` **4.58.5 / 4.59.1**，Docker 部署，单域。
+
+**未验证**：其他 `ui-default` 版本、非 Docker 部署、多域站点、中英文之外的 locale。
+
+`problem_sidebar_normal.html` 与 `nav.html` 在这两个版本里逐字相同，所以覆盖不会错位；
+但其他版本的模板结构若不同，覆盖会丢掉原生菜单项。症状是题目侧栏少按钮 ——
+删除 `templates/partials/{nav,problem_sidebar_normal}.html` 即可回退到「只有后端功能」
+（拉题 / 提交接口不受影响，只是题目页没有侧栏按钮）。
+
+题目页判断「是不是洛谷题」只看 `luogu.problems` 的登记，不看题号前缀 ——
+否则本站自带的 `P1000` 之类会被误认成洛谷题。若你是从旧版本升级、标记表为空，
+可以设 `luogu-import.pidPrefixFallback = true` 临时退回前缀判断。
 
 ### 批量删题接口的保护
 

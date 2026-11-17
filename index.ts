@@ -11,7 +11,7 @@ import {
 } from './src/importer';
 import {
     formatRecord, getSourcePid, initSourceMarkers, isLuoguProblem, LANG_MAP,
-    listMarkedPids, looksLikeLuoguPid, markLuoguProblem, resolveLang,
+    isLuoguProblemSync, listMarkedPids, looksLikeLuoguPid, markLuoguProblem, resolveLang,
 } from './src/submit';
 import {
     clearCredentials, getPublicConfig, initConfig, loadCredentials, saveCredentials,
@@ -302,7 +302,9 @@ class LuoguSubmitBaseHandler extends Handler {
         if (!pdoc) throw new ValidationError('题目不存在');
         const hydroPid = String(pdoc.pid || pid);
         const realDomainId = String(pdoc.domainId || domainId);
-        if (!await isLuoguProblem(realDomainId, hydroPid)) {
+        let allowPrefix = false;
+        try { allowPrefix = !!(this.ctx as any)?.setting?.get?.('luogu-import.pidPrefixFallback'); } catch (e) { /* ignore */ }
+        if (!await isLuoguProblem(realDomainId, hydroPid, allowPrefix)) {
             throw new ValidationError('该题不是洛谷题，无法提交到 Luogu');
         }
         return { pdoc, hydroPid, domainId: realDomainId };
@@ -773,11 +775,17 @@ export async function apply(ctx: Context) {
     // 标记集合（luogu.problems）由提交接口的 isLuoguProblem() 负责，二者结合。
     ctx.on('handler/create', (h: any) => {
         const path = String(h?.request?.path || '');
-        const m = path.match(/^\/p\/([^/]+)\/?$/);
+        // 兼容多域：/p/:pid 与 /d/:domain/p/:pid
+        const m = path.match(/^(?:\/d\/([^/]+))?\/p\/([^/]+)\/?$/);
         if (!m) return;
-        const pid = decodeURIComponent(m[1]);
-        // response.body 会在 handler 执行时被重建，UiContext 是稳定的同一对象
-        if (looksLikeLuoguPid(pid) && h?.UiContext) h.UiContext.isLuoguProblem = true;
+        const domainId = m[1] ? decodeURIComponent(m[1]) : 'system';
+        const pid = decodeURIComponent(m[2]);
+        let allowPrefix = false;
+        try { allowPrefix = !!(h?.ctx?.setting?.get?.('luogu-import.pidPrefixFallback')); } catch (e) { /* ignore */ }
+        // response.body 会在 handler 执行时被重建，UiContext 是稳定的同一对象。
+        // 用「标记集合」判断而不是题号前缀 —— 前缀会把本站自带的 P1000 也当成洛谷题，
+        // 在别人站点上凭空多出「提交到 Luogu」按钮。
+        if (isLuoguProblemSync(domainId, pid, allowPrefix) && h?.UiContext) h.UiContext.isLuoguProblem = true;
     }, { global: true } as any);
 
     ctx.addScript(
