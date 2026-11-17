@@ -382,9 +382,63 @@
       });
   }
 
+  /* ---------- 补 ui-default(4.59.1) 的「评测记录」打开后不回填 ----------
+   * 复现：进入在线编程时「评测记录」是收起的（localStorage scratchpad/records=false），
+   *   之后再点开 → 面板展开、高度正常，但 tbody 永远为空，且不发任何请求。
+   * 根因（2030.*.chunk.js / 9900.*.chunk.js，upstream）：
+   *   ① 挂载时只读一次 localStorage 决定 records.visible
+   *   ② 数据只在 componentDidMount 里 `recordsVisible && loadSubmissions()` 拉一次
+   *   ③ toggle 的 reducer 只翻转 visible 并写回 localStorage，**从不重新拉取**
+   * 这个构建里 DOM 上没有 __reactFiber$ 键，够不到 loadSubmissions，所以自己取一次
+   * UiContext.getSubmissionsUrl 并按原生行结构渲染。
+   *
+   * 防重复：只有「面板已展开 + tbody 连续 N 次为空 + 距首次观察到展开已过 1.5s」才补。
+   *   mount 时 records.visible=true 的情况 native 会在几百毫秒内填好行，1.5s 足够避开竞争。
+   * 字段名是 memory / time（不是 memoryKb / timeMs），单位 KB / ms。
+   */
+  var nativeFill = { armed: 0, tried: false };
+
+  function fillNativeRecords() {
+    if (nativeFill.tried) return;
+    var body = document.querySelector('.scratchpad__records__table tbody');
+    if (!body) return;
+    var view = body.closest('.split-view-view');
+    var open = view && view.getBoundingClientRect().height > 40;
+    if (!open) { nativeFill.armed = 0; return; }
+    if (body.children.length) { nativeFill.tried = true; return; }   // native 已经填好了
+    if (++nativeFill.armed < 3) return;                             // 约 1.5s 后再动手
+    var url = window.UiContext && window.UiContext.getSubmissionsUrl;
+    if (!url) return;
+    nativeFill.tried = true;
+    req(url).then(function (data) {
+      var rows = (data && data.rdocs) || [];
+      if (!rows.length || body.children.length) return;             // 期间 native 填上了就不重复插
+      rows.forEach(function (r) {
+        var st = statusOf(r.status);
+        var tr = document.createElement('tr');
+        tr.setAttribute('data-native-row', String(r._id));
+        var mem = (r.memory === undefined || r.memory === null) ? '-' : Math.ceil(r.memory / 1000) + ' MB';
+        var tim = (r.time === undefined || r.time === null) ? '-' : (r.time / 1000).toFixed(1) + 's';
+        tr.innerHTML = ''
+          + '<td class="col--detail record-status--border ' + st[0] + '">'
+          + '<span class="icon record-status--icon ' + st[0] + '"></span>'
+          + '<span class="icol icol--pretest"></span>'
+          + '<span class="record-status--text ' + st[0] + '">' + esc(st[1]) + '</span>'
+          + '</td>'
+          + '<td class="col--memory">' + esc(mem) + '</td>'
+          + '<td class="col--time">' + esc(tim) + '</td>'
+          + '<td class="col--at"><time>#' + esc(String(r._id).slice(-6)) + '</time></td>';
+        tr.style.cursor = 'pointer';
+        tr.addEventListener('click', function () { window.location.href = '/record/' + r._id; });
+        body.appendChild(tr);
+      });
+    }).catch(function () { nativeFill.tried = false; });
+  }
+
   function installButton() {
     var submitBtn = document.querySelector('.scratchpad__toolbar__submit');
     if (!submitBtn) return;
+    fillNativeRecords();
     var btn = document.querySelector('.luogu-scratchpad-submit');
     if (!btn) {
       btn = document.createElement('button');
