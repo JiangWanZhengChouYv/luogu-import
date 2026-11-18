@@ -1,8 +1,18 @@
-# luogu-import v1.1.0
+# luogu-import 1.2.0(1)
 
 仓库：https://github.com/JiangWanZhengChouYv/luogu-import
 
 HydroOJ 的洛谷插件：**拉题 → 多语言题面 → 本地样例评测 → 提交到洛谷 → 用 AC 代码反算极限测试点**。
+
+## 版本号规则
+
+格式 `1.2.0(n)`：`1.2.0` 是基准版本，括号里是**同一基准上的修订号**。
+
+- 新功能 / 破坏性改动 → 进位到新的基准版本，修订号回到 `(1)`
+- 修 bug → 基准不变，括号 +1（`1.2.0(1)` → `1.2.0(2)` → …）
+
+`package.json` 的 `version` 必须是合法 semver，所以只写基准号（`1.2.0`），
+修订号在 `revision` 与 `displayVersion` 字段里，git tag 用完整形式 `v1.2.0(1)`。
 
 - 适配：HydroOJ **5.x**（`@hydrooj/register` + Node 22）
 - 依赖：无额外 npm 依赖（只用 `hydrooj` 自带的导出）
