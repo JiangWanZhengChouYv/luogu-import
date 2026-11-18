@@ -72,6 +72,36 @@ export async function setLocalRid(rid: string, localRid: string) {
 }
 
 /**
+ * 把洛谷终态缓存在提交记录上（不含代码）。
+ * 前端刷新后 records 数组会清空，历史行只能靠这里恢复；
+ * 否则一条已完成的提交刷新后就永远消失，或停在 Waiting。
+ */
+export async function cacheTerminalResult(rid: string, payload: any) {
+    try {
+        await coll(SUBMISSIONS).updateOne({ _id: String(rid) }, {
+            $set: { terminalCache: payload, cachedAt: Date.now() },
+        });
+    } catch (e) {
+        logger.warn('cache terminal result failed for %s: %s', rid, (e as Error).message);
+    }
+}
+
+export async function listRecentSubmissions(
+    uid: number, domainId: string, docId: number, limit = 10,
+): Promise<any[]> {
+    try {
+        return await coll(SUBMISSIONS)
+            .find({ uid, domainId, docId })
+            .sort({ submittedAt: -1 })
+            .limit(limit)
+            .toArray();
+    } catch (e) {
+        logger.warn('listRecentSubmissions failed: %s', (e as Error).message);
+        return [];
+    }
+}
+
+/**
  * 只在洛谷 AC 时保存标程。按 (domainId, docId) 一份，
  * 同一 hash 不重复写，避免无谓的重算。
  */

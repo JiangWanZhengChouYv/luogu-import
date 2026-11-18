@@ -25,7 +25,7 @@ import {
     listJobs, recoverJobs, runJob, startJob,
 } from './src/jobs';
 import {
-    finishFix, getOracle, getSubmission, initOracle, listFixes, regenerateSamples,
+    cacheTerminalResult, finishFix, getOracle, getSubmission, initOracle, listFixes, listRecentSubmissions, regenerateSamples,
     saveOracle, saveSubmission, setLocalRid,
 } from './src/oracle';
 
@@ -502,10 +502,55 @@ class LuoguRecordHandler extends Handler {
                 }
                 // 学生端接口不返回反算详情/样例内容；管理员可到 /manage/luogu/oracle/:pid 查看
             }
+
+            // 终态缓存：刷新后 records 数组清空，历史行靠 luogu.submissions.terminalCache 恢复，
+            // 否则一条已完成的提交刷新后就消失（或永远停在 Waiting）。
+            if (result.terminal && submission) {
+                await cacheTerminalResult(rid, {
+                    rid,
+                    status: result.status,
+                    statusText: result.statusText,
+                    score: result.score,
+                    timeMs: result.timeMs,
+                    memoryKb: result.memoryKb,
+                    terminal: true,
+                    local: result.local || null,
+                    cachedAt: Date.now(),
+                });
+            }
             this.response.body = result;
         } catch (e) {
             throw new ValidationError(e?.message || '获取评测结果失败');
         }
+    }
+}
+
+/**
+ * 历史提交：返回本题最近 N 条提交的**缓存终态**（不含代码）。
+ * 前端刷新后 records 数组是空的，靠这个接口恢复洛谷行；
+ * 没有缓存的行返回 status=0（Waiting），前端会顺手 poll 一次拿真实状态。
+ */
+class LuoguHistoryHandler extends Handler {
+    async prepare() {
+        this.checkPriv(PRIV.PRIV_USER_PROFILE);
+    }
+
+    async get() {
+        const pid = String(this.args.pid || '');
+        const domainId = String(this.args.domainId || 'system');
+        const pdoc = await ProblemModel.get(domainId, pid);
+        if (!pdoc) throw new ValidationError('题目不存在');
+        const docs = await listRecentSubmissions(this.user._id, domainId, pdoc.docId as number, 10);
+        this.response.body = {
+            records: docs.map((d: any) => (d.terminalCache
+                ? { ...d.terminalCache, cached: true }
+                : {
+                    rid: d.rid, status: 0, statusText: '等待中 (Waiting)', score: null,
+                    timeMs: null, memoryKb: null, terminal: false,
+                    local: d.localRid ? { rid: d.localRid, status: 0, terminal: false } : null,
+                    submittedAt: d.submittedAt,
+                })),
+        };
     }
 }
 
@@ -758,6 +803,7 @@ export async function apply(ctx: Context) {
     // 洛谷题的提交入口（登录用户即可，UI 与原生提交页一致）
     ctx.Route('luogu_submit', '/luogu/submit/:pid', LuoguSubmitHandler, PRIV.PRIV_USER_PROFILE);
     ctx.Route('luogu_record', '/luogu/record/:rid', LuoguRecordHandler, PRIV.PRIV_USER_PROFILE);
+    ctx.Route('luogu_history', '/luogu/history/:pid', LuoguHistoryHandler, PRIV.PRIV_USER_PROFILE);
     ctx.Route('luogu_captcha', '/luogu/captcha', LuoguCaptchaHandler, PRIV.PRIV_USER_PROFILE);
     ctx.Route('luogu_oracle', '/manage/luogu/oracle/:pid', LuoguOracleHandler, PRIV.PRIV_EDIT_SYSTEM);
     ctx.Route('luogu_cleanup', '/manage/luogu/cleanup', LuoguProblemCleanupHandler, PRIV.PRIV_EDIT_SYSTEM);

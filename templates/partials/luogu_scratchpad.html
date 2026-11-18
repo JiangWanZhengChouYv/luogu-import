@@ -9,6 +9,7 @@
   var polling = {};          // rid -> interval
   var $ = function (id) { return document.getElementById(id); };
 
+  // Hydro 本地状态码（LOCAL 行 / 原生评测记录行用）
   var STATUS = {
     0: ['pending', 'Waiting'], 1: ['pass', 'AC'], 2: ['fail', 'WA'],
     3: ['fail', 'TLE'], 4: ['fail', 'MLE'], 5: ['fail', 'OLE'],
@@ -17,7 +18,23 @@
     20: ['progress', 'Judging'], 21: ['progress', 'Compiling'], 22: ['progress', 'Fetched'],
     30: ['ignored', 'IGNORED'], 31: ['fail', 'FE'], 32: ['pass', 'HACK OK'], 33: ['fail', 'HACK FAIL']
   };
-  function statusOf(s) { return STATUS[s] || ['pending', String(s === undefined ? '?' : s)]; }
+  // 洛谷状态码完全另一套：12=AC、14=未通过、21/22/23=Hack。
+  // 之前只查 Hydro 表，12/14 查不到就 fallback 成 ['pending', '14']，
+  // 结果未通过的提交也显示小时钟 + 裸数字（用户实测）。
+  var LUOGU_STYLE = {
+    '-1': 'ignored', 0: 'pending', 1: 'progress', 2: 'fail', 3: 'fail', 4: 'fail',
+    5: 'fail', 6: 'fail', 7: 'fail', 11: 'fail', 12: 'pass', 14: 'fail',
+    21: 'pass', 22: 'fail', 23: 'ignored',
+  };
+  function statusOf(s, kind) {
+    if (kind === 'local') return STATUS[s] || ['pending', String(s === undefined ? '?' : s)];
+    if (kind === 'luogu') {
+      var st = LUOGU_STYLE[s];
+      if (st) return [st, String(s)];
+      return ['pending', String(s === undefined ? '?' : s)];
+    }
+    return STATUS[s] || ['pending', String(s === undefined ? '?' : s)];
+  }
 
   function esc(s) {
     return String(s === undefined || s === null ? '' : s)
@@ -125,7 +142,9 @@
   }
 
   function makeRow(rec, kind) {
-    var st = statusOf(rec.status);
+    // 洛谷行用洛谷码表；文本优先用后端算好的中文（如「未通过 (Unaccepted)」）
+    var st = statusOf(rec.status, kind === 'luogu' ? 'luogu' : 'local');
+    if (rec.statusText) st = [st[0], rec.statusText];
     var tr = document.createElement('tr');
     tr.setAttribute('data-luogu-row', rec.rid + '-' + kind);
     tr.style.cursor = 'pointer';
@@ -147,30 +166,52 @@
     return tr;
   }
 
+  /** 行的内容指纹：状态/时空/分数变了就必须重绘，否则会一直停在创建时的那一行 */
+  function rowSig(rec) {
+    return [rec.status, rec.timeMs, rec.memoryKb, rec.score,
+      (rec.statusText || '').slice(0, 20)].join('|');
+  }
+
   function renderRows() {
     var body = recordsBody();
     if (!body) return;
-    // 幂等补齐：只在行缺失/多余时才改 DOM。
+    // 幂等补齐 + 原地更新：行缺失才插入，内容变了就换掉。
     // 绝不能对 tbody 挂 MutationObserver 再在回调里重绘——自己插入行会再次触发回调，
     // 异步 microtask 里同步标志已复位，导致无限递归、页面卡死（用户实测过）。
+    // 行键必须与 makeRow 内部一致（用该行自己的 rid）：
+    // local.rid 是 Hydro 的 ObjectId，与洛谷 rec.rid 不同，
+    // 之前统一用 rec.rid 拼键，导致本地行每轮被清理循环删掉再重建。
     var want = {};
     records.forEach(function (rec) {
-      want[rec.rid + '-luogu'] = rec;
-      if (rec.local) want[rec.rid + '-local'] = rec.local;
+      want[rec.rid + '-luogu'] = true;
+      if (rec.local) want[rec.local.rid + '-local'] = true;
     });
     var old = body.querySelectorAll('tr[data-luogu-row]');
     for (var i = 0; i < old.length; i++) {
-      if (!want[old[i].getAttribute('data-luogu-row')]) {
-        body.removeChild(old[i]);
-      }
+      if (!want[old[i].getAttribute('data-luogu-row')]) body.removeChild(old[i]);
     }
     records.forEach(function (rec) {
-      if (!body.querySelector('tr[data-luogu-row="' + rec.rid + '-luogu"]')) {
-        body.insertBefore(makeRow(rec, 'luogu'), body.firstChild);
-      }
-      if (rec.local && !body.querySelector('tr[data-luogu-row="' + rec.rid + '-local"]')) {
-        body.insertBefore(makeRow(rec.local, 'local'), body.firstChild);
-      }
+      var pairs = [['luogu', rec]];
+      if (rec.local) pairs.push(['local', rec.local]);
+      pairs.forEach(function (pair) {
+        var kind = pair[0];
+        var item = pair[1];
+        var key = item.rid + '-' + kind;
+        var sig = rowSig(item);
+        var existing = body.querySelector('tr[data-luogu-row="' + key + '"]');
+        if (!existing) {
+          var row = makeRow(item, kind);
+          row.setAttribute('data-sig', sig);
+          body.insertBefore(row, body.firstChild);
+          return;
+        }
+        // 关键修复：状态从 Waiting → 终态时必须重绘，否则永远显示 Waiting。
+        if (existing.getAttribute('data-sig') !== sig) {
+          var fresh = makeRow(item, kind);
+          fresh.setAttribute('data-sig', sig);
+          body.replaceChild(fresh, existing);
+        }
+      });
     });
   }
 
@@ -263,7 +304,7 @@
     $('lg-sp-title').textContent = '洛谷评测详情 #' + esc(rec.rid);
     $('lg-sp-captcha').style.display = 'none';
     $('lg-sp-link').href = 'https://www.luogu.com.cn/record/' + encodeURIComponent(rec.rid);
-    var st = statusOf(rec.status);
+    var st = statusOf(rec.status, 'luogu'); if (rec.statusText) st = [st[0], rec.statusText];
     var stText = rec.statusText || st[1];
     var html = '<p><strong>' + esc(stText) + '</strong>　分数：'
       + (rec.score === null || rec.score === undefined ? '-' : esc(rec.score))
@@ -277,13 +318,13 @@
     }
     if (rec.compileError) html += '<pre style="max-height:200px;overflow:auto">' + esc(rec.compileError) + '</pre>';
     (rec.subtasks || []).forEach(function (s) {
-      var ss = statusOf(s.status);
+      var ss = statusOf(s.status, 'luogu'); if (s.statusText) ss = [ss[0], s.statusText];
       html += '<h3>子任务 #' + (s.id + 1) + '：' + esc(ss[1]) + '</h3>';
       var cases = s.testCases || [];
       if (!cases.length) { html += '<p style="color:#6a737d">无逐测试点明细。</p>'; return; }
       html += '<table style="border-collapse:collapse;width:100%"><thead><tr><th>#</th><th>状态</th><th>得分</th><th>耗时</th><th>内存</th></tr></thead><tbody>';
       cases.forEach(function (c) {
-        var cs = statusOf(c.status);
+        var cs = statusOf(c.status, 'luogu'); if (c.statusText) cs = [cs[0], c.statusText];
         html += '<tr><td>' + (c.id + 1) + '</td><td>' + esc(cs[1]) + '</td><td>'
           + (c.score === null ? '-' : esc(c.score)) + '</td><td>'
           + (c.timeMs === null ? '-' : esc(c.timeMs) + ' ms') + '</td><td>'
@@ -314,8 +355,8 @@
         upsert(d);
         if (d.terminal) {
           clearInterval(polling[rid]); delete polling[rid];
-          var label = '洛谷 ' + (d.statusText || statusOf(d.status)[1])
-            + (d.local ? ' · 本地 ' + (d.local.statusText || statusOf(d.local.status)[1]) : '');
+          var label = '洛谷 ' + (d.statusText || statusOf(d.status, 'luogu')[1])
+            + (d.local ? ' · 本地 ' + (d.local.statusText || statusOf(d.local.status, 'local')[1]) : '');
           // 只有 AC 才自动弹评测记录；其它状态只出气泡
           if (d.status === 12) {
             toast('评测完成：' + label + '（点此看详情）', function () { openDetail(d); });
@@ -414,7 +455,7 @@
       var rows = (data && data.rdocs) || [];
       if (!rows.length || body.children.length) return;             // 期间 native 填上了就不重复插
       rows.forEach(function (r) {
-        var st = statusOf(r.status);
+        var st = statusOf(r.status, 'local'); if (r.statusText) st = [st[0], r.statusText];
         var tr = document.createElement('tr');
         tr.setAttribute('data-native-row', String(r._id));
         var mem = (r.memory === undefined || r.memory === null) ? '-' : Math.ceil(r.memory / 1000) + ' MB';
@@ -458,6 +499,46 @@
   // 500ms 轮询足够跟住 React 重渲染，且 installButton/renderRows 都是幂等的。
   installButton();
   setInterval(installButton, 500);
+
+  /* ---------- 恢复历史提交行 ----------
+   * records 数组只活在内存里，刷新即清空；之前刷新后洛谷行会整个消失。
+   * 现在进入 IDE 时拉一次 /luogu/history/:pid（后端缓存的终态），
+   * 未终态的行顺手 poll 一次，让真实状态自己追上来。 */
+  var historyLoaded = false;
+  function loadHistory() {
+    if (historyLoaded) return;
+    var pid = currentPid();
+    if (!pid) return;
+    historyLoaded = true;
+    req('/luogu/history/' + encodeURIComponent(pid)).then(function (d) {
+      var rows = (d && d.records) || [];
+      rows.forEach(function (rec) {
+        if (rec && rec.rid) {
+          upsert(Object.assign({ subtasks: [], sampleFixes: [] }, rec));
+          if (!rec.terminal) poll(String(rec.rid));
+        }
+      });
+    }).catch(function () { historyLoaded = false; });
+  }
+  loadHistory();
+  // IDE 是 React 切换出来的，首次进入可能晚于本脚本执行；随 500ms 轮询补拉一次
+  setInterval(loadHistory, 500);
+
+  // 自查入口：对已有 rid 走一遍「Waiting → 轮询 → upsert → renderRows」，
+  // 全程只读（只 GET /luogu/record），绝不向洛谷发提交。
+  // 用法：控制台执行 __luoguPollTest('310668502')，
+  // 观察该行是否先显示 Waiting、随后被重绘成真实终态（证明 renderRows 的更新路径生效）。
+  window.__luoguPollTest = function (rid) {
+    rid = String(rid || '');
+    if (!/^\d+$/.test(rid)) return 'rid 必须是纯数字';
+    // 先按 submit 成功后的同一形状插入一条 Waiting（走真实 upsert/renderRows）
+    upsert({
+      rid: rid, status: 0, terminal: false, score: null, timeMs: null, memoryKb: null,
+      local: null, subtasks: [], sampleFixes: [],
+    });
+    poll(rid);
+    return 'inserted Waiting for ' + rid + ', polling…';
+  };
 
   // 自查入口：只显示弹窗，不发提交
   window.__luoguShowCaptcha = function () {
