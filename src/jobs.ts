@@ -221,18 +221,30 @@ async function probeGaps(
     check: () => Promise<string>, onPid: (pid: string) => Promise<void>,
 ): Promise<{ probed: number; found: number }> {
     const prefix = source.toUpperCase();
+    // 题号可能带后缀：CF2021E3（年份+赛题）、CF177E2、AT1202Contest_a、UVA123 …
+    // 直接 Number(slice(prefix)) 会把 CF2021E3 算成 2021000，探测上限瞬间变成 200 万，
+    // 按 1200ms 限速要跑 28 天（实测卡在这里 18.5 小时）。只取开头的连续数字段。
     const nums = [...seen]
         .filter((p) => p.startsWith(prefix))
-        .map((p) => Number(p.slice(prefix.length)))
+        .map((p) => {
+            const m = /^(\d+)/.exec(p.slice(prefix.length));
+            return m ? Number(m[1]) : NaN;
+        })
         .filter((n) => Number.isFinite(n) && n > 0);
     if (!nums.length) return { probed: 0, found: 0 };
     const max = Math.max(...nums);
+    // 兜底：探测上限不超过「已见题号数量」的 5 倍，避免任何解析异常把任务拖成天文数字。
+    const cap = Math.max(1000, Math.ceil(seen.size * 5));
+    const upper = Math.min(max, cap);
+    if (upper < max) {
+        await log(id, `🔍 ${prefix} 缺口探测上限由 P${max} 收紧到 P${upper}（防止异常题号导致超长探测）`);
+    }
     let probed = 0;
     let found = 0;
     const from = Math.max(1, cursor.probeIndex || 1);
     if (from > 1) await log(id, `🔍 ${prefix} 库缺口探测从断点 P${from} 继续`);
     else await log(id, `🔍 ${prefix} 库缺口探测：已知最大题号 P${max}，开始核对缺失题号`);
-    for (let n = from; n <= max; n++) {
+    for (let n = from; n <= upper; n++) {
         const state = await check();
         if (state !== 'continue') break;
         const pid = `${prefix}${n}`;
