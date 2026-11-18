@@ -508,6 +508,7 @@ class LuoguRecordHandler extends Handler {
             if (result.terminal && submission) {
                 await cacheTerminalResult(rid, {
                     rid,
+                    submittedAt: submission.submittedAt || Date.now(),
                     status: result.status,
                     statusText: result.statusText,
                     score: result.score,
@@ -543,7 +544,9 @@ class LuoguHistoryHandler extends Handler {
         const docs = await listRecentSubmissions(this.user._id, domainId, pdoc.docId as number, 10);
         this.response.body = {
             records: docs.map((d: any) => (d.terminalCache
-                ? { ...d.terminalCache, cached: true }
+                // submittedAt 以提交记录本身为准：旧缓存里可能没有这个字段，
+                // 缺了会导致前端按「现在」排序，全部堆到顶部
+                ? { ...d.terminalCache, submittedAt: d.submittedAt || d.terminalCache.cachedAt, cached: true }
                 : {
                     rid: d.rid, status: 0, statusText: '等待中 (Waiting)', score: null,
                     timeMs: null, memoryKb: null, terminal: false,

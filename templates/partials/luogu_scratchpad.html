@@ -141,12 +141,56 @@
     return document.querySelector('.scratchpad__records__table tbody');
   }
 
+  /** 相对时间（与原生行一致：1 分钟前 / 2 小时前） */
+  function relativeTime(ms) {
+    var d = Date.now() - Number(ms || 0);
+    if (d < 0) d = 0;
+    var sec = Math.floor(d / 1000);
+    if (sec < 60) return sec + ' 秒前';
+    var min = Math.floor(sec / 60);
+    if (min < 60) return min + ' 分钟前';
+    var hr = Math.floor(min / 60);
+    if (hr < 24) return hr + ' 小时前';
+    return Math.floor(hr / 24) + ' 天前';
+  }
+
+  /** 读一行的时间：插件行用 data-at，原生行从 time[data-tooltip] 解析 */
+  function rowTime(tr) {
+    var at = tr.getAttribute('data-at');
+    if (at) return Number(at) || 0;
+    var t = tr.querySelector('time');
+    if (t) {
+      var tip = t.getAttribute('data-tooltip');
+      if (tip) {
+        var ms = Date.parse(String(tip).replace(' ', 'T'));
+        if (!isNaN(ms)) return ms;
+      }
+    }
+    return 0;
+  }
+
+  /** 按时间降序插入：插到第一个比它旧的行之前。
+   *  之前一律 insertBefore(firstChild)，导致洛谷/本地行全堆在顶部，
+   *  把普通记录挤出可视区（用户实测「普通记录都不显示」）。 */
+  function insertByTime(body, tr) {
+    var ms = rowTime(tr);
+    var kids = body.children;
+    for (var i = 0; i < kids.length; i++) {
+      var other = kids[i];
+      if (other === tr) continue;
+      var om = rowTime(other);
+      if (om && om < ms) { body.insertBefore(tr, other); return; }
+    }
+    body.appendChild(tr);
+  }
+
   function makeRow(rec, kind) {
     // 洛谷行用洛谷码表；文本优先用后端算好的中文（如「未通过 (Unaccepted)」）
     var st = statusOf(rec.status, kind === 'luogu' ? 'luogu' : 'local');
     if (rec.statusText) st = [st[0], rec.statusText];
     var tr = document.createElement('tr');
     tr.setAttribute('data-luogu-row', rec.rid + '-' + kind);
+    tr.setAttribute('data-at', String(rec.submittedAt || Date.now()));
     tr.style.cursor = 'pointer';
     var mem = rec.memoryKb === null || rec.memoryKb === undefined
       ? '-' : Math.ceil(rec.memoryKb / 1000) + ' MB';
@@ -161,7 +205,8 @@
       + '</td>'
       + '<td class="col--memory">' + esc(mem) + '</td>'
       + '<td class="col--time">' + esc(tim) + '</td>'
-      + '<td class="col--at"><time>' + esc(kind === 'local' ? ('#' + rec.rid) : ('#' + rec.rid)) + '</time></td>';
+      + '<td class="col--at"><time data-tooltip="#' + esc(rec.rid) + '">'
+      + esc(relativeTime(rec.submittedAt || Date.now())) + '</time></td>';
     tr.addEventListener('click', function () { openDetail(rec); });
     return tr;
   }
@@ -192,7 +237,12 @@
     }
     records.forEach(function (rec) {
       var pairs = [['luogu', rec]];
-      if (rec.local) pairs.push(['local', rec.local]);
+      if (rec.local) {
+        // local 是内嵌对象，本身没有 submittedAt；继承外层提交时间，
+        // 否则它按 Date.now() 显示「0 秒前」，还会被排到最前面
+        if (!rec.local.submittedAt) rec.local.submittedAt = rec.submittedAt;
+        pairs.push(['local', rec.local]);
+      }
       pairs.forEach(function (pair) {
         var kind = pair[0];
         var item = pair[1];
@@ -202,7 +252,7 @@
         if (!existing) {
           var row = makeRow(item, kind);
           row.setAttribute('data-sig', sig);
-          body.insertBefore(row, body.firstChild);
+          insertByTime(body, row);
           return;
         }
         // 关键修复：状态从 Waiting → 终态时必须重绘，否则永远显示 Waiting。
@@ -437,27 +487,60 @@
    *   mount 时 records.visible=true 的情况 native 会在几百毫秒内填好行，1.5s 足够避开竞争。
    * 字段名是 memory / time（不是 memoryKb / timeMs），单位 KB / ms。
    */
-  var nativeFill = { armed: 0, tried: false };
+  var nativeFill = { armed: 0, tried: false, filled: false };
+
+  /** 只数「React 原生渲染的行」：既不是插件行也不是补位行。
+   *  之前用 body.children.length 判定，会被 loadHistory 先插入的洛谷/本地行污染，
+   *  导致误以为原生记录已加载而放弃补位 → 普通记录整个不显示（用户实测）。 */
+  function reactRowCount() {
+    var body = document.querySelector('.scratchpad__records__table tbody');
+    if (!body) return -1;
+    var n = 0;
+    [].slice.call(body.children).forEach(function (tr) {
+      if (!tr.getAttribute('data-luogu-row') && !tr.getAttribute('data-native-row')) n++;
+    });
+    return n;
+  }
+
+  function dropNativeFill() {
+    var body = document.querySelector('.scratchpad__records__table tbody');
+    if (!body) return;
+    [].slice.call(body.querySelectorAll('tr[data-native-row]')).forEach(function (tr) {
+      body.removeChild(tr);
+    });
+  }
 
   function fillNativeRecords() {
+    var rn = reactRowCount();
+    if (rn > 0) {
+      // React 自己渲染了原生记录：补位行是多余的，撤掉，避免重复
+      if (nativeFill.filled) { dropNativeFill(); nativeFill.filled = false; }
+      nativeFill.tried = true;
+      nativeFill.armed = 0;
+      return;
+    }
     if (nativeFill.tried) return;
     var body = document.querySelector('.scratchpad__records__table tbody');
     if (!body) return;
     var view = body.closest('.split-view-view');
     var open = view && view.getBoundingClientRect().height > 40;
     if (!open) { nativeFill.armed = 0; return; }
-    if (body.children.length) { nativeFill.tried = true; return; }   // native 已经填好了
     if (++nativeFill.armed < 3) return;                             // 约 1.5s 后再动手
     var url = window.UiContext && window.UiContext.getSubmissionsUrl;
     if (!url) return;
     nativeFill.tried = true;
     req(url).then(function (data) {
       var rows = (data && data.rdocs) || [];
-      if (!rows.length || body.children.length) return;             // 期间 native 填上了就不重复插
+      if (!rows.length || reactRowCount() > 0) return;              // 期间 native 填上了就不重复插
+      nativeFill.filled = true;
       rows.forEach(function (r) {
         var st = statusOf(r.status, 'local'); if (r.statusText) st = [st[0], r.statusText];
         var tr = document.createElement('tr');
         tr.setAttribute('data-native-row', String(r._id));
+        // ObjectId 前 4 字节是创建时间戳，用它排序/显示，避免补位行全堆在末尾
+        var oidMs = 0;
+        try { oidMs = parseInt(String(r._id).slice(0, 8), 16) * 1000; } catch (e) { oidMs = 0; }
+        tr.setAttribute('data-at', String(oidMs || Date.now()));
         var mem = (r.memory === undefined || r.memory === null) ? '-' : Math.ceil(r.memory / 1000) + ' MB';
         var tim = (r.time === undefined || r.time === null) ? '-' : (r.time / 1000).toFixed(1) + 's';
         tr.innerHTML = ''
@@ -468,17 +551,36 @@
           + '</td>'
           + '<td class="col--memory">' + esc(mem) + '</td>'
           + '<td class="col--time">' + esc(tim) + '</td>'
-          + '<td class="col--at"><time>#' + esc(String(r._id).slice(-6)) + '</time></td>';
+          + '<td class="col--at"><time data-tooltip="#' + esc(String(r._id)) + '">'
+          + esc(relativeTime(oidMs || Date.now())) + '</time></td>';
         tr.style.cursor = 'pointer';
         tr.addEventListener('click', function () { window.location.href = '/record/' + r._id; });
-        body.appendChild(tr);
+        insertByTime(body, tr);
       });
     }).catch(function () { nativeFill.tried = false; });
+  }
+
+  /** React 会在我们之后才渲染原生行，届时插件行会全部浮到顶部。
+   *  这里在原生行数量变化时把我们自己的行摘下来重新按时间插回。
+   *  只动 data-luogu-row 的行，绝不碰 React 渲染的节点。 */
+  var lastReactCount = -1;
+  function resortPluginRows() {
+    var body = recordsBody();
+    if (!body) return;
+    var rn = reactRowCount();
+    if (rn === lastReactCount) return;
+    lastReactCount = rn;
+    var ours = [].slice.call(body.querySelectorAll('tr[data-luogu-row]'));
+    if (!ours.length) return;
+    ours.forEach(function (tr) { if (tr.parentNode === body) body.removeChild(tr); });
+    ours.sort(function (a, b) { return rowTime(b) - rowTime(a); });
+    ours.forEach(function (tr) { insertByTime(body, tr); });
   }
 
   function installButton() {
     var submitBtn = document.querySelector('.scratchpad__toolbar__submit');
     if (!submitBtn) return;
+    resortPluginRows();
     fillNativeRecords();
     var btn = document.querySelector('.luogu-scratchpad-submit');
     if (!btn) {
